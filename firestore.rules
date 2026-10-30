@@ -1,0 +1,191 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'bappadityakuilya@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function hasValidAuthorityKey(data) {
+      return ('authorityKey' in data) &&
+        data.authorityKey is string &&
+        data.authorityKey.size() <= 64 &&
+        (data.authorityKey == 'NOVA-HALDIA-KEY-2026' || data.authorityKey == 'nova-haldia-admin-2026');
+    }
+
+    function isAuthorizedAuthority(data) {
+      return isAdmin() || hasValidAuthorityKey(data);
+    }
+
+    // Validation Blueprint for Issue Entity
+    function isValidIssue(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'description', 'location', 'category',
+          'status', 'urgency_hits', 'similar_count', 'created_at', 'updated_at'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'location', 'photo_url', 'lat', 'lng',
+          'category', 'status', 'urgency_hits', 'similar_count',
+          'created_at', 'updated_at', 'authorityKey'
+        ]) &&
+        data.id is number && data.id >= 1 && data.id <= 1000000 &&
+        data.title is string && data.title.size() >= 5 && data.title.size() <= 120 &&
+        data.description is string && data.description.size() >= 10 && data.description.size() <= 2000 &&
+        data.location is string && data.location.size() >= 3 && data.location.size() <= 200 &&
+        (!('photo_url' in data) || data.photo_url == null || (data.photo_url is string && data.photo_url.size() <= 500 && data.photo_url.matches('^https?://\\S+$'))) &&
+        (!('lat' in data) || data.lat == null || (data.lat is number && data.lat >= -90 && data.lat <= 90)) &&
+        (!('lng' in data) || data.lng == null || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
+        data.category is string && data.category.size() <= 32 && data.category in ['Road', 'Water', 'Electricity', 'Sanitation', 'Other'] &&
+        data.status is string && data.status.size() <= 32 && data.status in ['Open', 'In Progress', 'Resolved'] &&
+        data.urgency_hits is number && data.urgency_hits >= 0 && data.urgency_hits <= 50 &&
+        data.similar_count is number && data.similar_count >= 0 && data.similar_count <= 1000 &&
+        data.created_at is string && data.created_at.size() >= 10 && data.created_at.size() <= 64 &&
+        data.updated_at is string && data.updated_at.size() >= 10 && data.updated_at.size() <= 64 &&
+        (!('authorityKey' in data) || (data.authorityKey is string && data.authorityKey.size() <= 64));
+    }
+
+    // Validation Blueprint for StatusEvent Subcollection Entity
+    function isValidStatusEvent(data) {
+      return data.keys().hasAll(['issue_id', 'to', 'note', 'at']) &&
+        data.keys().hasOnly(['issue_id', 'from', 'to', 'note', 'at', 'authorityKey']) &&
+        data.issue_id is number && data.issue_id >= 1 && data.issue_id <= 1000000 &&
+        (!('from' in data) || data.from == null || (data.from is string && data.from.size() <= 32 && data.from in ['Open', 'In Progress', 'Resolved'])) &&
+        data.to is string && data.to.size() <= 32 && data.to in ['Open', 'In Progress', 'Resolved'] &&
+        data.note is string && data.note.size() >= 3 && data.note.size() <= 500 &&
+        data.at is string && data.at.size() >= 10 && data.at.size() <= 64 &&
+        (!('authorityKey' in data) || (data.authorityKey is string && data.authorityKey.size() <= 64));
+    }
+
+    // Validation Blueprint for AdminProfile Entity
+    function isValidAdminProfile(data, adminUid) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+        data.keys().hasOnly(['uid', 'email', 'role']) &&
+        data.uid is string && data.uid.size() <= 128 && data.uid == adminUid &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 256 &&
+        data.role is string && data.role.size() <= 32 && data.role == 'ward_officer';
+    }
+
+    // Test connection document used by validate connection boot probe
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+      allow list, create, update, delete: if false;
+    }
+
+    // Primary Issues Collection (/issues/{issueId})
+    match /issues/{issueId} {
+      allow get: if isValidId(issueId);
+      allow list: if resource.data.id >= 1;
+
+      allow create: if isValidId(issueId) &&
+        isValidIssue(incoming()) &&
+        (incoming().status == 'Open' || isAuthorizedAuthority(incoming()));
+
+      allow update: if isValidId(issueId) &&
+        isValidIssue(incoming()) &&
+        incoming().id == existing().id &&
+        (
+          // Action 1: Similar count bump during duplicate clustering
+          (
+            existing().status != 'Resolved' &&
+            incoming().created_at == existing().created_at &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['similar_count', 'updated_at']) &&
+            incoming().similar_count == existing().similar_count + 1
+          ) ||
+          // Action 2: Strict State Machine Transition (Open -> In Progress -> Resolved) by Authority
+          (
+            isAuthorizedAuthority(incoming()) &&
+            existing().status != 'Resolved' &&
+            incoming().created_at == existing().created_at &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updated_at', 'authorityKey']) &&
+            (
+              (existing().status == 'Open' && incoming().status == 'In Progress') ||
+              (existing().status == 'In Progress' && incoming().status == 'Resolved')
+            )
+          ) ||
+          // Action 3: Authority Seed / Reset synchronization
+          (
+            isAuthorizedAuthority(incoming()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'description', 'location', 'photo_url', 'lat', 'lng',
+              'category', 'status', 'urgency_hits', 'similar_count',
+              'created_at', 'updated_at', 'authorityKey'
+            ])
+          ) ||
+          // Action 4: Verified Admin Override
+          isAdmin()
+        );
+
+      allow delete: if isValidId(issueId) && isAdmin();
+
+      // Status Events Subcollection (/issues/{issueId}/events/{eventId})
+      match /events/{eventId} {
+        allow get: if isValidId(issueId) && isValidId(eventId);
+        allow list: if resource.data.issue_id >= 1;
+
+        allow create: if isValidId(issueId) &&
+          isValidId(eventId) &&
+          isValidStatusEvent(incoming()) &&
+          exists(/databases/$(database)/documents/issues/$(issueId)) &&
+          (
+            (incoming().to == 'Open' && (!('from' in incoming()) || incoming().from == null)) ||
+            isAuthorizedAuthority(incoming())
+          );
+
+        allow update: if isValidId(issueId) &&
+          isValidId(eventId) &&
+          isValidStatusEvent(incoming()) &&
+          isAuthorizedAuthority(incoming()) &&
+          incoming().issue_id == existing().issue_id &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['from', 'to', 'note', 'at', 'authorityKey']);
+
+        allow delete: if isValidId(issueId) && isValidId(eventId) && isAdmin();
+      }
+    }
+
+    // Trusted Admins Collection (/admins/{adminUid})
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (
+        (isSignedIn() && request.auth.uid == adminUid) || isAdmin()
+      );
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isValidId(adminUid) &&
+        isAdmin() &&
+        isValidAdminProfile(incoming(), adminUid);
+      allow update: if isValidId(adminUid) &&
+        isValidAdminProfile(incoming(), adminUid) &&
+        isAdmin() &&
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'role']);
+      allow delete: if isValidId(adminUid) && isAdmin();
+    }
+  }
+}

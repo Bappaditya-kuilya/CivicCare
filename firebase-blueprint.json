@@ -1,0 +1,167 @@
+{
+  "entities": {
+    "Issue": {
+      "title": "Issue",
+      "description": "A public civic infrastructure issue report in Haldia with automated keyword triage and priority scoring.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "Sequential numeric issue ID for resident lookup."
+        },
+        "title": {
+          "type": "string",
+          "description": "Concise issue summary.",
+          "minLength": 5,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed report description.",
+          "minLength": 10,
+          "maxLength": 2000
+        },
+        "location": {
+          "type": "string",
+          "description": "Haldia ward locality or landmark.",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "photo_url": {
+          "type": "string",
+          "description": "Optional external http/https evidence URL.",
+          "maxLength": 500,
+          "pattern": "^https?://\\S+$"
+        },
+        "lat": {
+          "type": "number",
+          "description": "Latitude coordinate."
+        },
+        "lng": {
+          "type": "number",
+          "description": "Longitude coordinate."
+        },
+        "category": {
+          "type": "string",
+          "description": "Auto-classified civic department.",
+          "enum": ["Road", "Water", "Electricity", "Sanitation", "Other"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Lifecycle status of the issue.",
+          "enum": ["Open", "In Progress", "Resolved"]
+        },
+        "urgency_hits": {
+          "type": "number",
+          "description": "Count of matched urgent hazard terms."
+        },
+        "similar_count": {
+          "type": "number",
+          "description": "Count of similar unresolved reports in the cluster."
+        },
+        "created_at": {
+          "type": "string",
+          "description": "ISO timestamp when issue was reported.",
+          "maxLength": 64
+        },
+        "updated_at": {
+          "type": "string",
+          "description": "ISO timestamp when issue was last updated.",
+          "maxLength": 64
+        },
+        "authorityKey": {
+          "type": "string",
+          "description": "Optional master authority key for dispatcher mutations.",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "description",
+        "location",
+        "category",
+        "status",
+        "urgency_hits",
+        "similar_count",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "StatusEvent": {
+      "title": "StatusEvent",
+      "description": "An immutable audit timeline entry recording a status transition and officer note.",
+      "type": "object",
+      "properties": {
+        "issue_id": {
+          "type": "number",
+          "description": "Numeric ID of the parent issue."
+        },
+        "from": {
+          "type": "string",
+          "description": "Previous status before transition.",
+          "maxLength": 32
+        },
+        "to": {
+          "type": "string",
+          "description": "New status after transition.",
+          "enum": ["Open", "In Progress", "Resolved"]
+        },
+        "note": {
+          "type": "string",
+          "description": "Mandatory ward authority note.",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO timestamp of the status event.",
+          "maxLength": 64
+        },
+        "authorityKey": {
+          "type": "string",
+          "description": "Optional authority key verification.",
+          "maxLength": 64
+        }
+      },
+      "required": ["issue_id", "to", "note", "at"]
+    },
+    "AdminProfile": {
+      "title": "AdminProfile",
+      "description": "Verified ward authority administrator record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID.",
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "Verified email address.",
+          "maxLength": 256
+        },
+        "role": {
+          "type": "string",
+          "description": "Assigned role.",
+          "enum": ["ward_officer"]
+        }
+      },
+      "required": ["uid", "email", "role"]
+    }
+  },
+  "firestore": {
+    "/issues/{issueId}": {
+      "schema": { "$ref": "#/entities/Issue" },
+      "description": "Primary collection of civic issues in Haldia."
+    },
+    "/issues/{issueId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/StatusEvent" },
+      "description": "Subcollection storing chronological status transitions and officer notes for an issue."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminProfile" },
+      "description": "Trusted collection of ward authority administrators."
+    }
+  }
+}
