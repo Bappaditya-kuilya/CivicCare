@@ -8,6 +8,8 @@ import {
   KeyRound,
   LayoutDashboard,
   Bot,
+  LogOut,
+  UserCheck,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { IssueCategory, IssueStatus } from './types';
@@ -18,12 +20,14 @@ import {
 } from './components/ResidentViews';
 import { UserPortalView } from './components/UserPortalView';
 import { AdminViews } from './components/AdminViews';
+import { AuthPage, PortalSession } from './components/AuthPage';
 import { DemoWalkthroughDrawer } from './components/DemoWalkthroughDrawer';
 import { CivicAiChatbot } from './components/CivicAiChatbot';
 import {
   MASTER_AUTHORITY_KEY,
   subscribeToAuth,
   ensureFirestoreSeeded,
+  signOutFirebaseUser,
 } from './lib/firebase';
 
 type RouteState =
@@ -63,11 +67,21 @@ function parseHashRoute(hash: string): RouteState {
 }
 
 const MY_SUBMITTED_STORAGE_KEY = 'civicpulse_my_submitted_ids';
+const PORTAL_SESSION_STORAGE_KEY = 'civiccare_portal_session_v1';
 
 export default function App() {
   const [route, setRoute] = useState<RouteState>(() =>
     parseHashRoute(window.location.hash)
   );
+  const [portalSession, setPortalSession] = useState<PortalSession | null>(() => {
+    try {
+      const saved = sessionStorage.getItem(PORTAL_SESSION_STORAGE_KEY);
+      if (saved) return JSON.parse(saved) as PortalSession;
+    } catch {
+      // Ignore
+    }
+    return null;
+  });
   const [adminToken, setAdminToken] = useState<string | null>(() => {
     const stored = sessionStorage.getItem('civicpulse_admin_token');
     if (stored === 'LOCKED') return null;
@@ -108,6 +122,26 @@ export default function App() {
     });
     const unsubscribe = subscribeToAuth((user) => {
       setFirebaseUser(user);
+      if (user) {
+        const autoSession: PortalSession = {
+          role: 'citizen',
+          displayName: user.displayName || 'Verified User',
+          email: user.email || '',
+          method: 'firebase-google',
+        };
+        setPortalSession((prev) => {
+          if (prev) return prev;
+          try {
+            sessionStorage.setItem(
+              PORTAL_SESSION_STORAGE_KEY,
+              JSON.stringify(autoSession)
+            );
+          } catch {
+            // Ignore
+          }
+          return autoSession;
+        });
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -138,6 +172,38 @@ export default function App() {
     setAdminToken(null);
   }, []);
 
+  const handleUnlockSite = useCallback(
+    (session: PortalSession, targetRoute: '#/user' | '#/admin') => {
+      try {
+        sessionStorage.setItem(
+          PORTAL_SESSION_STORAGE_KEY,
+          JSON.stringify(session)
+        );
+      } catch {
+        // Ignore
+      }
+      setPortalSession(session);
+      navigateHash(targetRoute);
+    },
+    [navigateHash]
+  );
+
+  const handleSignOutSite = useCallback(async () => {
+    try {
+      sessionStorage.removeItem(PORTAL_SESSION_STORAGE_KEY);
+    } catch {
+      // Ignore
+    }
+    setPortalSession(null);
+    if (firebaseUser) {
+      try {
+        await signOutFirebaseUser();
+      } catch {
+        // Ignore
+      }
+    }
+  }, [firebaseUser]);
+
   const recordMySubmittedIssue = useCallback((id: number) => {
     setMySubmittedIds((prev) => {
       const next = prev.includes(id) ? prev : [id, ...prev];
@@ -150,15 +216,31 @@ export default function App() {
     });
   }, []);
 
+  // Entry Gate: Show the Firebase Login screen at the start before availing the site
+  if (!portalSession && !firebaseUser) {
+    return (
+      <AuthPage
+        onUnlockSite={handleUnlockSite}
+        onSaveAdminToken={handleSaveToken}
+      />
+    );
+  }
+
+  const activeUserDisplay =
+    firebaseUser?.displayName ||
+    firebaseUser?.email ||
+    portalSession?.displayName ||
+    'Verified User';
+
   const isUserDashboardActive = route.name === 'user';
   const isReportActive = route.name === 'report' || route.name === 'done';
   const isTrackActive = route.name === 'track';
   const isAdminActive = route.name === 'admin';
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#f4f5f8] text-[#17181d]">
+    <div className="min-h-screen flex flex-col bg-[#f4f5f8] text-[#17181d] overflow-x-hidden">
       {/* Top Bar (Strictly 3 zones separated by gap-8 per Top Bar Contract & design.md Section 5) */}
-      <header className="h-[56px] bg-white border-b border-[#d8dbe2] px-3 sm:px-6 flex items-center justify-between gap-4 sm:gap-8 sticky top-0 z-30">
+      <header className="h-[56px] bg-white border-b border-[#d8dbe2] px-3 sm:px-6 flex items-center justify-between gap-3 sm:gap-8 sticky top-0 z-30">
         {/* Zone 1: Single text element wordmark */}
         <a
           href="#/user"
@@ -170,7 +252,7 @@ export default function App() {
         {/* Zone 2: Concise single-line navigation links */}
         <nav
           aria-label="Primary Navigation"
-          className="hidden md:flex items-center gap-6 text-sm font-medium text-[#5e606b]"
+          className="hidden md:flex items-center gap-5 lg:gap-6 text-sm font-medium text-[#5e606b]"
         >
           <a
             href="#/user"
@@ -215,12 +297,21 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: 1 Primary Action */}
-        <div className="flex items-center shrink-0">
+        {/* Zone 3: Primary Action + Mobile Sign Out */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleSignOutSite}
+            title="Sign out and return to login screen"
+            className="md:hidden h-9 px-2.5 rounded-[8px] border border-[#d8dbe2] bg-[#f7f8fb] hover:bg-[#fdeceb] text-[#17181d] hover:text-[#c7342e] text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
           <button
             type="button"
             onClick={() => setWalkthroughOpen(true)}
-            className="h-9 px-3.5 rounded-[8px] bg-[#4f46c8] hover:bg-[#4338b5] text-white text-xs font-semibold shadow-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="h-9 px-3 sm:px-3.5 rounded-[8px] bg-[#4f46c8] hover:bg-[#4338b5] text-white text-xs font-semibold shadow-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             3-Min Demo Guide
           </button>
@@ -228,13 +319,13 @@ export default function App() {
       </header>
 
       {/* Main Application Shell: Left Sidebar on Desktop + Scrollable Content Canvas */}
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-w-0">
         {/* Persistent Left Sidebar (Desktop >= 768px) */}
         <aside
           aria-label="Workspace Sidebar"
-          className="hidden md:flex md:w-[220px] bg-white border-r border-[#d8dbe2] flex-col justify-between p-3 shrink-0"
+          className="hidden md:flex md:w-[228px] bg-white border-r border-[#d8dbe2] flex-col justify-between p-3 shrink-0"
         >
-          <div className="space-y-6">
+          <div className="space-y-5">
             {/* Resident User Panel Navigation */}
             <div className="space-y-1">
               <div className="px-3 py-1.5 text-xs font-semibold text-[#858793]">
@@ -329,20 +420,46 @@ export default function App() {
             </div>
           </div>
 
-          {/* Sidebar Footer */}
-          <div className="p-3 rounded-[10px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs text-[#5e606b] space-y-1">
-            <div className="flex items-center gap-1.5 font-semibold text-[#17181d]">
-              <Building2 className="w-3.5 h-3.5 text-[#4f46c8]" />
-              <span>User + Admin + Gemini AI</span>
+          {/* Signed-In Session Card & Sign Out */}
+          <div className="space-y-2">
+            <div className="p-3 rounded-[10px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs space-y-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <UserCheck className="w-4 h-4 text-[#127848] shrink-0" />
+                <div className="min-w-0">
+                  <div className="font-semibold text-[#17181d] truncate">
+                    {activeUserDisplay}
+                  </div>
+                  <div className="text-[11px] text-[#858793] truncate">
+                    {portalSession?.role === 'authority'
+                      ? 'Ward Authority Session'
+                      : 'Verified Citizen Session'}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleSignOutSite}
+                className="w-full h-8 px-2.5 rounded-[6px] bg-white hover:bg-[#fdeceb] border border-[#d8dbe2] hover:border-[#f5c2c0] text-xs font-semibold text-[#c7342e] flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
+              </button>
             </div>
-            <div className="text-[11px] text-[#858793]">
-              28 Haldia issues · Live GPS &amp; Real Photos
+
+            <div className="p-2.5 rounded-[10px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs text-[#5e606b] space-y-0.5">
+              <div className="flex items-center gap-1.5 font-semibold text-[#17181d]">
+                <Building2 className="w-3.5 h-3.5 text-[#4f46c8]" />
+                <span>User + Admin + Gemini AI</span>
+              </div>
+              <div className="text-[11px] text-[#858793]">
+                28 Haldia issues · Live GPS &amp; Real Photos
+              </div>
             </div>
           </div>
         </aside>
 
         {/* Main Content Viewport */}
-        <main className="flex-1 min-w-0 p-4 sm:p-6 pb-20 md:pb-8 max-w-[1320px] mx-auto w-full">
+        <main className="flex-1 min-w-0 p-3 sm:p-6 pb-20 md:pb-8 max-w-[1320px] mx-auto w-full">
           {route.name === 'user' && (
             <UserPortalView
               mySubmittedIds={mySubmittedIds}
@@ -461,7 +578,7 @@ export default function App() {
         </button>
       </nav>
 
-      {/* Interactive CivicPulse AI Chatbot Drawer */}
+      {/* Interactive CivicCare AI Chatbot Drawer */}
       <CivicAiChatbot
         isOpen={aiChatOpen}
         onToggleOpen={setAiChatOpen}
