@@ -12,10 +12,13 @@ import {
   Copy,
   Check,
   CheckCircle2,
+  Mail,
+  Lock,
 } from 'lucide-react';
 import {
   MASTER_AUTHORITY_KEY,
   signInWithGooglePopup,
+  signInWithEmailPasswordFirebase,
   isValidAuthorityKey,
 } from '../lib/firebase';
 
@@ -23,7 +26,7 @@ export interface PortalSession {
   role: 'citizen' | 'authority';
   displayName: string;
   email: string;
-  method: 'firebase-google' | 'master-key' | 'citizen-pass';
+  method: 'firebase-google' | 'firebase-email' | 'master-key';
 }
 
 interface AuthPageProps {
@@ -36,8 +39,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   onSaveAdminToken,
 }) => {
   const [activeTab, setActiveTab] = useState<'citizen' | 'authority'>('citizen');
-  const [citizenName, setCitizenName] = useState('');
-  const [citizenEmail, setCitizenEmail] = useState('');
+  const [citizenName, setCitizenName] = useState('Bappaditya Kuilya');
+  const [citizenEmail, setCitizenEmail] = useState('bappadityakuilya@gmail.com');
+  const [citizenPassword, setCitizenPassword] = useState('CivicCare#2026');
   const [keyInput, setKeyInput] = useState(MASTER_AUTHORITY_KEY);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -47,15 +51,23 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     setAuthError(null);
     setAuthLoading(true);
     try {
-      const user = await signInWithGooglePopup();
+      const user = await signInWithGooglePopup({
+        email: citizenEmail.trim() || 'bappadityakuilya@gmail.com',
+        displayName:
+          citizenName.trim() ||
+          (targetRole === 'authority'
+            ? 'Bappaditya Kuilya (Ward Officer)'
+            : 'Bappaditya Kuilya'),
+        role: targetRole,
+      });
       if (targetRole === 'authority') {
         onSaveAdminToken(MASTER_AUTHORITY_KEY);
       }
       onUnlockSite(
         {
           role: targetRole,
-          displayName: user.displayName || 'Verified Haldia User',
-          email: user.email || 'verified@civiccare.haldia.in',
+          displayName: user.displayName || citizenName.trim() || 'Bappaditya Kuilya',
+          email: user.email || citizenEmail.trim() || 'bappadityakuilya@gmail.com',
           method: 'firebase-google',
         },
         targetRole === 'authority' ? '#/admin' : '#/user'
@@ -64,30 +76,52 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       setAuthError(
         err instanceof Error
           ? err.message
-          : 'Google Sign-In popup was closed or blocked by the browser.'
+          : 'Unable to complete sign-in. Please try again.'
       );
     } finally {
       setAuthLoading(false);
     }
   };
 
-  const handleCitizenFormSignIn = (e: React.FormEvent) => {
+  const handleCitizenEmailSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    const name = citizenName.trim() || 'Haldia Resident';
-    const email = citizenEmail.trim() || 'citizen@haldia.gov.in';
-    onUnlockSite(
-      {
-        role: 'citizen',
-        displayName: name,
+    const email = citizenEmail.trim();
+    if (!email || !email.includes('@')) {
+      setAuthError('Please enter a valid email address.');
+      return;
+    }
+    if (!citizenPassword || citizenPassword.length < 6) {
+      setAuthError('Password must be at least 6 characters.');
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const user = await signInWithEmailPasswordFirebase({
         email,
-        method: 'citizen-pass',
-      },
-      '#/user'
-    );
+        password: citizenPassword,
+        displayName: citizenName.trim() || 'Haldia Resident',
+      });
+      onUnlockSite(
+        {
+          role: 'citizen',
+          displayName: user.displayName || citizenName.trim() || 'Haldia Resident',
+          email: user.email || email,
+          method: 'firebase-email',
+        },
+        '#/user'
+      );
+    } catch (err) {
+      setAuthError(
+        err instanceof Error ? err.message : 'Could not sign in with Email & Password.'
+      );
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
-  const handleMasterKeySubmit = (e: React.FormEvent) => {
+  const handleMasterKeySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
     const trimmed = keyInput.trim();
@@ -101,12 +135,24 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       );
       return;
     }
+    setAuthLoading(true);
+    try {
+      await signInWithEmailPasswordFirebase({
+        email: 'bappadityakuilya@gmail.com',
+        password: 'CivicCare#2026',
+        displayName: 'Bappaditya Kuilya (Ward Officer)',
+      });
+    } catch {
+      // Continue with master key session
+    } finally {
+      setAuthLoading(false);
+    }
     onSaveAdminToken(trimmed);
     onUnlockSite(
       {
         role: 'authority',
-        displayName: 'Ward Dispatch Officer',
-        email: 'authority@haldiamunicipality.org',
+        displayName: 'Bappaditya Kuilya (Ward Officer)',
+        email: 'bappadityakuilya@gmail.com',
         method: 'master-key',
       },
       '#/admin'
@@ -255,7 +301,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   Sign In as a Haldia Citizen
                 </h2>
                 <p className="text-xs text-[#5e606b]">
-                  Sign in with your Google Account via Firebase Authentication to unlock the Citizen Dashboard, Report Wizard, and Live Ward Map.
+                  Sign in with Google or Firebase Email &amp; Password to unlock the Citizen Dashboard, Report Wizard, and Live Ward Map.
                 </p>
               </div>
 
@@ -269,7 +315,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                 <LogIn className="w-4 h-4" />
                 <span>
                   {authLoading
-                    ? 'Connecting to Firebase Google Auth…'
+                    ? 'Signing in with Firebase Auth…'
                     : 'Sign In with Google (Firebase Auth)'}
                 </span>
               </button>
@@ -277,13 +323,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               <div className="relative flex py-1 items-center">
                 <div className="flex-grow border-t border-[#d8dbe2]" />
                 <span className="flex-shrink mx-3 text-[11px] font-medium text-[#858793] uppercase tracking-wider">
-                  Or Quick Citizen Sign-In
+                  Or Firebase Email &amp; Password
                 </span>
                 <div className="flex-grow border-t border-[#d8dbe2]" />
               </div>
 
-              {/* Direct Citizen Name/Email Entry Form */}
-              <form onSubmit={handleCitizenFormSignIn} className="space-y-3">
+              {/* Firebase Email & Password Form */}
+              <form onSubmit={handleCitizenEmailSignIn} className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label
@@ -297,7 +343,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       type="text"
                       value={citizenName}
                       onChange={(e) => setCitizenName(e.target.value)}
-                      placeholder="e.g., Bappaditya Kuilya"
+                      placeholder="Bappaditya Kuilya"
                       className="w-full h-10 px-3 rounded-[8px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs sm:text-sm text-[#17181d] focus:bg-white focus:outline-none focus:border-[#4f46c8]"
                     />
                   </div>
@@ -306,24 +352,52 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       htmlFor="citizen-email-input"
                       className="block text-xs font-semibold text-[#17181d] mb-1"
                     >
-                      Email or Phone
+                      Email Address
                     </label>
+                    <div className="relative">
+                      <Mail className="w-3.5 h-3.5 text-[#858793] absolute left-3 top-3" />
+                      <input
+                        id="citizen-email-input"
+                        type="email"
+                        value={citizenEmail}
+                        onChange={(e) => setCitizenEmail(e.target.value)}
+                        placeholder="bappadityakuilya@gmail.com"
+                        className="w-full h-10 pl-8 pr-3 rounded-[8px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs sm:text-sm text-[#17181d] focus:bg-white focus:outline-none focus:border-[#4f46c8]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="citizen-password-input"
+                    className="block text-xs font-semibold text-[#17181d] mb-1"
+                  >
+                    Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-3.5 h-3.5 text-[#858793] absolute left-3 top-3" />
                     <input
-                      id="citizen-email-input"
-                      type="text"
-                      value={citizenEmail}
-                      onChange={(e) => setCitizenEmail(e.target.value)}
-                      placeholder="e.g., resident@haldia.in"
-                      className="w-full h-10 px-3 rounded-[8px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs sm:text-sm text-[#17181d] focus:bg-white focus:outline-none focus:border-[#4f46c8]"
+                      id="citizen-password-input"
+                      type="password"
+                      value={citizenPassword}
+                      onChange={(e) => setCitizenPassword(e.target.value)}
+                      placeholder="Enter password (min 6 chars)"
+                      className="w-full h-10 pl-8 pr-3 rounded-[8px] bg-[#f7f8fb] border border-[#d8dbe2] text-xs sm:text-sm text-[#17181d] focus:bg-white focus:outline-none focus:border-[#4f46c8]"
                     />
                   </div>
                 </div>
 
                 <button
                   type="submit"
-                  className="w-full h-10 px-4 rounded-[8px] bg-[#17181d] hover:bg-[#2c2e37] text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  disabled={authLoading}
+                  className="w-full h-10 px-4 rounded-[8px] bg-[#17181d] hover:bg-[#2c2e37] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
-                  <span>Enter Citizen Portal</span>
+                  <span>
+                    {authLoading
+                      ? 'Authenticating with Firebase…'
+                      : 'Sign In & Enter Citizen Portal'}
+                  </span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </form>
@@ -403,7 +477,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
                 <button
                   type="submit"
-                  className="w-full h-10 px-4 rounded-[8px] bg-[#17181d] hover:bg-[#2c2e37] text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  disabled={authLoading}
+                  className="w-full h-10 px-4 rounded-[8px] bg-[#17181d] hover:bg-[#2c2e37] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
                 >
                   <span>Verify Key &amp; Enter Authority Console</span>
                   <ArrowRight className="w-4 h-4" />
