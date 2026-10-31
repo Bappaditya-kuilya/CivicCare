@@ -61,7 +61,7 @@ service cloud.firestore {
         data.title is string && data.title.size() >= 5 && data.title.size() <= 120 &&
         data.description is string && data.description.size() >= 10 && data.description.size() <= 2000 &&
         data.location is string && data.location.size() >= 3 && data.location.size() <= 200 &&
-        (!('photo_url' in data) || data.photo_url == null || (data.photo_url is string && data.photo_url.size() <= 500 && data.photo_url.matches('^https?://\\S+$'))) &&
+        (!('photo_url' in data) || data.photo_url == null || (data.photo_url is string && data.photo_url.size() <= 500 && data.photo_url.matches('^(/assets/|https?://)\\S+$'))) &&
         (!('lat' in data) || data.lat == null || (data.lat is number && data.lat >= -90 && data.lat <= 90)) &&
         (!('lng' in data) || data.lng == null || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
         data.category is string && data.category.size() <= 32 && data.category in ['Road', 'Water', 'Electricity', 'Sanitation', 'Other'] &&

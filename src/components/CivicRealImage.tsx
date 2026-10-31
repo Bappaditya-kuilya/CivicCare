@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { IssueCategory } from '../types';
 import {
-  getRealPhotoForCategory,
-  getFallbackPhotoForCategory,
+  getRealPhotoForIssue,
+  getFallbackPhotoForIssue,
 } from '../lib/syntheticAssets';
 
 interface CivicRealImageProps {
   category: IssueCategory;
   photoUrl?: string | null;
+  issueId?: number | null;
   alt: string;
   className?: string;
 }
@@ -82,18 +83,35 @@ function buildOfflinePhotographicCanvas(category: IssueCategory, label: string):
 export const CivicRealImage: React.FC<CivicRealImageProps> = ({
   category,
   photoUrl,
+  issueId,
   alt,
   className = 'w-full h-full object-cover',
 }) => {
-  const primarySrc = getRealPhotoForCategory(category, photoUrl);
-  const secondarySrc = getFallbackPhotoForCategory(category);
+  const primarySrc = getRealPhotoForIssue({
+    id: issueId,
+    title: alt,
+    category,
+    photo_url: photoUrl,
+  });
+  const secondarySrc = getFallbackPhotoForIssue({
+    id: issueId,
+    title: alt,
+    category,
+  });
   const [currentSrc, setCurrentSrc] = useState<string>(primarySrc);
   const [fallbackStage, setFallbackStage] = useState<number>(0);
 
   useEffect(() => {
-    setCurrentSrc(getRealPhotoForCategory(category, photoUrl));
+    setCurrentSrc(
+      getRealPhotoForIssue({
+        id: issueId,
+        title: alt,
+        category,
+        photo_url: photoUrl,
+      })
+    );
     setFallbackStage(0);
-  }, [category, photoUrl]);
+  }, [category, photoUrl, issueId, alt]);
 
   const handleImageError = () => {
     if (fallbackStage === 0 && currentSrc !== secondarySrc) {
@@ -112,6 +130,7 @@ export const CivicRealImage: React.FC<CivicRealImageProps> = ({
     <img
       src={currentSrc}
       alt={alt}
+      loading="lazy"
       referrerPolicy="no-referrer"
       onError={handleImageError}
       className={className}

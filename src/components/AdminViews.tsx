@@ -752,6 +752,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                   <thead>
                     <tr className="border-b border-[#d8dbe2] bg-[#f7f8fb] text-[12px] font-semibold text-[#5e606b]">
                       <th className="py-2.5 pl-4 pr-2 w-16">ID</th>
+                      <th className="py-2.5 px-2 w-16">Photo</th>
                       <th className="py-2.5 px-2 w-28 text-right">Priority</th>
                       <th className="py-2.5 px-3">Issue &amp; Locality</th>
                       <th className="py-2.5 px-2 w-28">Department</th>
@@ -767,12 +768,23 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                         <tr
                           key={row.id}
                           onClick={() => onSelectIssue(row.id)}
-                          className={`h-[48px] transition-colors cursor-pointer ${
+                          className={`h-[52px] transition-colors cursor-pointer ${
                             isSelected ? 'bg-[#e8e8fb]/70' : 'hover:bg-[#f7f8fb]'
                           }`}
                         >
-                          <td className="py-2.5 pl-4 pr-2 font-mono tabular-nums font-semibold text-[#4f46c8]">
+                          <td className="py-2 pl-4 pr-2 font-mono tabular-nums font-semibold text-[#4f46c8]">
                             #{row.id}
+                          </td>
+                          <td className="py-2 px-2">
+                            <div className="w-11 h-8 rounded-[5px] overflow-hidden border border-[#d8dbe2] bg-[#171925]">
+                              <CivicRealImage
+                                category={row.category}
+                                photoUrl={row.photo_url}
+                                issueId={row.id}
+                                alt={row.title}
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
                           </td>
                           <td className="py-2.5 px-2 text-right font-mono tabular-nums">
                             <span
@@ -790,7 +802,7 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                               ({row.band})
                             </span>
                           </td>
-                          <td className="py-2.5 px-3 max-w-[280px]">
+                          <td className="py-2.5 px-3 max-w-[260px]">
                             <div className="font-semibold text-[#17181d] truncate">
                               {row.title}
                             </div>
@@ -843,28 +855,41 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                       key={row.id}
                       type="button"
                       onClick={() => onSelectIssue(row.id)}
-                      className={`w-full text-left p-4 space-y-1.5 transition-colors cursor-pointer ${
+                      className={`w-full text-left p-4 flex items-start gap-3 transition-colors cursor-pointer ${
                         isSelected ? 'bg-[#e8e8fb]/70' : 'hover:bg-[#f7f8fb]'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs font-mono tabular-nums">
-                          <span className="font-bold text-[#4f46c8]">#{row.id}</span>
-                          <span className="mx-1.5 text-[#858793]">·</span>
-                          <span className="font-semibold text-[#17181d]">{row.category}</span>
-                          <span className="mx-1.5 text-[#858793]">·</span>
-                          <span className="text-[#5e606b]">{row.status}</span>
-                        </div>
-                        <div className="text-xs font-mono tabular-nums font-bold text-[#a33e3e]">
-                          Score {row.priority} ({row.band})
-                        </div>
+                      <div className="w-16 h-14 rounded-[6px] overflow-hidden border border-[#d8dbe2] bg-[#171925] shrink-0">
+                        <CivicRealImage
+                          category={row.category}
+                          photoUrl={row.photo_url}
+                          issueId={row.id}
+                          alt={row.title}
+                          className="w-full h-full object-cover"
+                        />
                       </div>
-                      <div className="text-sm font-semibold text-[#17181d]">{row.title}</div>
-                      <div className="flex items-center justify-between text-xs text-[#5e606b]">
-                        <span className="truncate">{row.location}</span>
-                        <span className="font-mono tabular-nums shrink-0 ml-2">
-                          {row.similar_count} sim · {row.age_days}d
-                        </span>
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs font-mono tabular-nums">
+                            <span className="font-bold text-[#4f46c8]">#{row.id}</span>
+                            <span className="mx-1.5 text-[#858793]">·</span>
+                            <span className="font-semibold text-[#17181d]">{row.category}</span>
+                            <span className="mx-1.5 text-[#858793]">·</span>
+                            <span className="text-[#5e606b]">{row.status}</span>
+                          </div>
+                          <div className="text-xs font-mono tabular-nums font-bold text-[#a33e3e]">
+                            {row.priority} ({row.band})
+                          </div>
+                        </div>
+                        <div className="text-sm font-semibold text-[#17181d] truncate">
+                          {row.title}
+                        </div>
+                        <div className="flex items-center justify-between text-xs text-[#5e606b]">
+                          <span className="truncate">{row.location}</span>
+                          <span className="font-mono tabular-nums shrink-0 ml-2">
+                            {row.similar_count} sim · {row.age_days}d
+                          </span>
+                        </div>
                       </div>
                     </button>
                   );
@@ -970,7 +995,8 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                     <CivicRealImage
                       category={selectedIssue.category}
                       photoUrl={selectedIssue.photo_url}
-                      alt={`Real field photograph for #${selectedIssue.id}`}
+                      issueId={selectedIssue.id}
+                      alt={selectedIssue.title}
                       className="w-full h-full object-cover"
                     />
                   </div>
@@ -996,7 +1022,9 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
               <a
                 href={getRealPhotoForCategory(
                   selectedIssue.category,
-                  selectedIssue.photo_url
+                  selectedIssue.photo_url,
+                  selectedIssue.id,
+                  selectedIssue.title
                 )}
                 target="_blank"
                 rel="noopener noreferrer nofollow"

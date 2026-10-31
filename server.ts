@@ -169,8 +169,8 @@ function validateIssuePayload(body: Record<string, unknown>): {
     fields.location = 'Location must be between 3 and 200 characters.';
   }
   if (photo_url !== null) {
-    if (photo_url.length > 500 || !/^https?:\/\/\S+$/i.test(photo_url)) {
-      fields.photo_url = 'Photo link must be a valid http:// or https:// URL under 500 characters.';
+    if (photo_url.length > 500 || !/^(\/assets\/|https?:\/\/)\S+$/i.test(photo_url)) {
+      fields.photo_url = 'Photo link must be a valid /assets/ or http(s):// URL under 500 characters.';
     }
   }
 

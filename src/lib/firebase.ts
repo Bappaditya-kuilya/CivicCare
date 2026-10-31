@@ -45,7 +45,7 @@ import {
   evaluateBenchmarkAccuracy,
 } from './triage';
 import { SEED_ISSUES } from './seed';
-import { getRealPhotoForCategory } from './syntheticAssets';
+import { getRealPhotoForCategory, getAbsoluteSyntheticUrl } from './syntheticAssets';
 
 // Master key pre-configured for the user and authorized in firestore.rules
 export const MASTER_AUTHORITY_KEY = 'NOVA-HALDIA-KEY-2026';
@@ -361,6 +361,7 @@ async function commitInChunks(
 }
 
 function buildSeedPayloads(): {
+  preparedDocs: FirestoreIssueDoc[];
   issueOps: Array<{ ref: DocumentReference; data: Record<string, unknown> }>;
   eventOps: Array<{ ref: DocumentReference; data: Record<string, unknown> }>;
 } {
@@ -383,7 +384,9 @@ function buildSeedPayloads(): {
       title: item.title,
       description: item.description,
       location: item.location,
-      photo_url: getRealPhotoForCategory(cat, item.photo_url),
+      photo_url: getAbsoluteSyntheticUrl(
+        getRealPhotoForCategory(cat, item.photo_url, id, item.title)
+      ),
       lat: item.lat,
       lng: item.lng,
       category: cat,
@@ -471,7 +474,25 @@ function buildSeedPayloads(): {
     }
   }
 
-  return { issueOps, eventOps };
+  return { preparedDocs, issueOps, eventOps };
+}
+
+function mergeWithSeedDocs(firestoreDocs: FirestoreIssueDoc[]): FirestoreIssueDoc[] {
+  const byId = new Map<number, FirestoreIssueDoc>();
+  for (const d of firestoreDocs) {
+    if (d && typeof d.id === 'number') {
+      byId.set(d.id, d);
+    }
+  }
+  if (byId.size < 28) {
+    const { preparedDocs } = buildSeedPayloads();
+    for (const seedDoc of preparedDocs) {
+      if (!byId.has(seedDoc.id)) {
+        byId.set(seedDoc.id, seedDoc);
+      }
+    }
+  }
+  return Array.from(byId.values());
 }
 
 let seedPromise: Promise<void> | null = null;
@@ -493,7 +514,13 @@ export async function ensureFirestoreSeeded(): Promise<void> {
       const { issueOps, eventOps } = buildSeedPayloads();
 
       if (snap.size < 28) {
-        await commitInChunks(issueOps, 8);
+        const existingIds = new Set(snap.docs.map((d) => Number(d.id)));
+        const missingIssueOps = issueOps.filter(
+          (op) => !existingIds.has(Number(op.data.id))
+        );
+        if (missingIssueOps.length > 0) {
+          await commitInChunks(missingIssueOps, 8);
+        }
       }
 
       if (!firstEventSnap.exists()) {
@@ -501,7 +528,7 @@ export async function ensureFirestoreSeeded(): Promise<void> {
       }
     } catch (error) {
       seedPromise = null;
-      handleFirestoreError(error, OperationType.WRITE, path);
+      console.warn('Non-fatal seed check warning:', error);
     }
   })();
 
@@ -666,7 +693,9 @@ export async function createIssueInFirestore(payload: {
       title,
       description,
       location,
-      photo_url,
+      photo_url: getAbsoluteSyntheticUrl(
+        getRealPhotoForCategory(category, photo_url, newId, title)
+      ),
       lat: coords.lat,
       lng: coords.lng,
       category,
@@ -722,15 +751,23 @@ export async function getIssueByIdFromFirestore(
   const issuePath = `issues/${id}`;
   try {
     const snap = await getDoc(doc(db, 'issues', String(id)));
-    if (!snap.exists()) {
+    let data: FirestoreIssueDoc | null = snap.exists()
+      ? (snap.data() as FirestoreIssueDoc)
+      : null;
+
+    if (!data && id >= 1 && id <= 28) {
+      const { preparedDocs } = buildSeedPayloads();
+      data = preparedDocs.find((d) => d.id === id) || null;
+    }
+
+    if (!data) {
       return null;
     }
-    const data = snap.data() as FirestoreIssueDoc;
 
     const eventsPath = `issues/${id}/events`;
     const evQuery = query(collection(db, eventsPath), where('issue_id', '>=', 1));
     const evSnap = await getDocs(evQuery);
-    const timeline: TimelineEvent[] = evSnap.docs
+    let timeline: TimelineEvent[] = evSnap.docs
       .map((d) => {
         const ev = d.data();
         return {
@@ -742,12 +779,28 @@ export async function getIssueByIdFromFirestore(
       })
       .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
+    if (timeline.length === 0) {
+      timeline = [
+        {
+          from: null,
+          to: 'Open',
+          note: 'Reported via public resident portal',
+          at: data.created_at,
+        },
+      ];
+    }
+
     return {
       id: data.id,
       title: data.title,
       description: data.description,
       location: data.location,
-      photo_url: getRealPhotoForCategory(data.category, data.photo_url),
+      photo_url: getRealPhotoForCategory(
+        data.category,
+        data.photo_url,
+        data.id,
+        data.title
+      ),
       lat: data.lat ?? null,
       lng: data.lng ?? null,
       category: data.category,
@@ -771,7 +824,7 @@ export async function getDashboardDataFromFirestore(filters: {
   try {
     const q = query(collection(db, path), where('id', '>=', 1));
     const snap = await getDocs(q);
-    const allRows = snap.docs.map((d) => d.data() as FirestoreIssueDoc);
+    const allRows = mergeWithSeedDocs(snap.docs.map((d) => d.data() as FirestoreIssueDoc));
 
     const by_category: Record<IssueCategory, number> = {
       Road: 0,
@@ -816,7 +869,12 @@ export async function getDashboardDataFromFirestore(filters: {
         title: r.title,
         description: r.description,
         location: r.location,
-        photo_url: getRealPhotoForCategory(r.category, r.photo_url),
+        photo_url: getRealPhotoForCategory(
+          r.category,
+          r.photo_url,
+          r.id,
+          r.title
+        ),
         lat: r.lat ?? null,
         lng: r.lng ?? null,
         category: r.category,

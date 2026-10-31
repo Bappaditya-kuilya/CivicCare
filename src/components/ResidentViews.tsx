@@ -69,7 +69,7 @@ const HALDIA_SAMPLE_PRESETS = [
     location: 'Durgachak Primary School Gate, Ward 11, Haldia',
     lat: 22.0604,
     lng: 88.1095,
-    photoUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Overhead_power_lines.jpg?width=800',
+    photoUrl: '/assets/issues/issue-4.jpg',
   },
   {
     label: 'Duplicate Pipe Leak (Triggers R10 Hint)',
@@ -79,7 +79,7 @@ const HALDIA_SAMPLE_PRESETS = [
     location: 'Durgachak Sector B Market, Haldia',
     lat: 22.0609,
     lng: 88.1101,
-    photoUrl: 'https://images.unsplash.com/photo-1584467735815-f778f274e296?auto=format&fit=crop&w=800&q=80',
+    photoUrl: '/assets/issues/issue-1.jpg',
   },
   {
     label: 'Bengali / Hindi Keywords (R12 Triage)',
@@ -89,7 +89,7 @@ const HALDIA_SAMPLE_PRESETS = [
     location: 'Basudevpur Ward 8 Ration Shop Lane, Haldia',
     lat: 22.068,
     lng: 88.095,
-    photoUrl: 'https://images.unsplash.com/photo-1530587191325-3db32d826c18?auto=format&fit=crop&w=800&q=80',
+    photoUrl: '/assets/issues/issue-10.jpg',
   },
   {
     label: 'Road Pothole Hazard',
@@ -99,7 +99,7 @@ const HALDIA_SAMPLE_PRESETS = [
     location: 'Ranichak Refinery Gate Approach, Haldia',
     lat: 22.037,
     lng: 88.091,
-    photoUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/Pothole.jpg?width=800',
+    photoUrl: '/assets/issues/issue-13.jpg',
   },
 ];
 
@@ -126,8 +126,8 @@ function validateClientPayload(fields: {
   if (l.length < 3 || l.length > 200) {
     errs.location = 'Location must be between 3 and 200 characters.';
   }
-  if (p.length > 0 && (p.length > 500 || !/^https?:\/\/\S+$/i.test(p))) {
-    errs.photo_url = 'Photo link must be a valid http:// or https:// URL under 500 characters.';
+  if (p.length > 0 && (p.length > 500 || !/^(\/assets\/|https?:\/\/)\S+$/i.test(p))) {
+    errs.photo_url = 'Photo link must be a valid /assets/ or http(s):// URL under 500 characters.';
   }
   if (fields.lat.trim()) {
     const parsedLat = Number(fields.lat);
@@ -1171,7 +1171,8 @@ export const TrackIssueView: React.FC<TrackIssueViewProps> = ({
                 <CivicRealImage
                   category={issue.category}
                   photoUrl={issue.photo_url}
-                  alt={`Real photographic evidence for issue #${issue.id}`}
+                  issueId={issue.id}
+                  alt={issue.title}
                   className="w-full h-full object-cover"
                 />
               </div>
@@ -1197,7 +1198,12 @@ export const TrackIssueView: React.FC<TrackIssueViewProps> = ({
           {issue.photo_url && (
             <div>
               <a
-                href={getRealPhotoForCategory(issue.category, issue.photo_url)}
+                href={getRealPhotoForCategory(
+                  issue.category,
+                  issue.photo_url,
+                  issue.id,
+                  issue.title
+                )}
                 target="_blank"
                 rel="noopener noreferrer nofollow"
                 className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#4f46c8] hover:underline"

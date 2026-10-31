@@ -377,7 +377,8 @@ export function seedDatabaseIfNeeded(db: Database.Database, force = false): { se
       location: string;
     }> = [];
 
-    for (const item of SEED_ISSUES) {
+    for (let idx = 0; idx < SEED_ISSUES.length; idx++) {
+      const item = SEED_ISSUES[idx];
       const cat = item.category || classify(item.title, item.description).category;
       const urg = urgencyHits(item.title, item.description).count;
       const createdDate = new Date(now - item.daysAgo * 24 * 60 * 60 * 1000);
@@ -394,7 +395,7 @@ export function seedDatabaseIfNeeded(db: Database.Database, force = false): { se
         item.title,
         item.description,
         item.location,
-        getRealPhotoForCategory(cat, item.photo_url),
+        getRealPhotoForCategory(cat, item.photo_url, idx + 1, item.title),
         item.lat,
         item.lng,
         cat,

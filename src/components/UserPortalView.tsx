@@ -333,7 +333,7 @@ export const UserPortalView: React.FC<UserPortalViewProps> = ({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {filteredIssues.map((issue) => {
             const isFollowed = combinedPersonalIds.includes(issue.id);
             const isSubmittedByMe = mySubmittedIds.includes(issue.id);
@@ -346,27 +346,25 @@ export const UserPortalView: React.FC<UserPortalViewProps> = ({
                 : 25;
 
             return (
-              <div
+              <article
                 key={issue.id}
-                className="bg-white border border-[#d8dbe2] rounded-[12px] overflow-hidden flex flex-col justify-between hover:border-[#4f46c8]/60 transition-colors"
+                className="bg-white border border-[#d8dbe2] rounded-[12px] overflow-hidden flex flex-col justify-between hover:border-[#4f46c8] transition-colors shadow-2xs"
               >
                 <div>
-                  {/* Real Field Photograph Header with 3-tier automatic fallback */}
-                  <div className="relative h-44 bg-[#171925] border-b border-[#d8dbe2]">
+                  {/* Unique Issue Real Photograph Header */}
+                  <div className="relative h-48 bg-[#171925] border-b border-[#d8dbe2]">
                     <CivicRealImage
                       category={issue.category}
                       photoUrl={issue.photo_url}
+                      issueId={issue.id}
                       alt={issue.title}
                       className="w-full h-full object-cover"
                     />
-                    <div className="absolute top-2.5 left-2.5 bg-white/95 backdrop-blur-xs border border-[#d8dbe2] rounded-[6px] px-2 py-0.5 text-xs font-mono font-bold text-[#17181d]">
-                      #{issue.id} · {issue.category}
-                    </div>
                     <button
                       type="button"
                       onClick={() => toggleFollowIssue(issue.id)}
                       title={isFollowed ? 'Following in My Issues' : 'Follow this issue'}
-                      className={`absolute top-2.5 right-2.5 h-7 px-2.5 rounded-[6px] border text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors ${
+                      className={`absolute top-3 right-3 h-7 px-2.5 rounded-[6px] border text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors ${
                         isFollowed
                           ? 'bg-[#4f46c8] text-white border-[#4f46c8]'
                           : 'bg-white/95 text-[#17181d] border-[#d8dbe2] hover:bg-white'
@@ -386,68 +384,72 @@ export const UserPortalView: React.FC<UserPortalViewProps> = ({
                     </button>
                   </div>
 
-                  {/* Card Body */}
-                  <div className="p-4 space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
-                      {issue.status === 'Resolved' && (
-                        <span className="font-semibold text-[#25985a] inline-flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Resolved</span>
+                  {/* Clean Card Body */}
+                  <div className="p-4 space-y-2">
+                    {/* Unboxed Metadata Line */}
+                    <div className="flex items-center justify-between text-xs text-[#5e606b]">
+                      <div className="flex items-center gap-1.5 font-medium">
+                        <span className="font-mono font-bold text-[#17181d]">
+                          #{issue.id}
                         </span>
-                      )}
-                      {issue.status === 'In Progress' && (
-                        <span className="font-semibold text-[#344da6] inline-flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5" />
-                          <span>In Progress (Crew Assigned)</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-[#4f46c8] font-semibold">
+                          {issue.category}
                         </span>
-                      )}
-                      {issue.status === 'Open' && (
-                        <span className="font-semibold text-[#a33e3e] inline-flex items-center gap-1">
-                          <AlertTriangle className="w-3.5 h-3.5" />
-                          <span>Open (Reported)</span>
-                        </span>
-                      )}
+                        <span aria-hidden="true">·</span>
+                        {issue.status === 'Resolved' && (
+                          <span className="font-semibold text-[#25985a] inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Resolved</span>
+                          </span>
+                        )}
+                        {issue.status === 'In Progress' && (
+                          <span className="font-semibold text-[#344da6] inline-flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5" />
+                            <span>In Progress</span>
+                          </span>
+                        )}
+                        {issue.status === 'Open' && (
+                          <span className="font-semibold text-[#a33e3e] inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Open</span>
+                          </span>
+                        )}
+                      </div>
 
                       <span className="text-[11px] font-mono text-[#858793]">
                         {new Date(issue.created_at).toLocaleDateString()}
                       </span>
                     </div>
 
-                    <h3 className="text-sm font-bold text-[#17181d] line-clamp-2">
+                    <h3 className="text-[15px] font-bold text-[#17181d] leading-snug line-clamp-2">
                       {issue.title}
                     </h3>
 
-                    <p className="text-xs text-[#5e606b] line-clamp-2">
+                    <p className="text-xs text-[#5e606b] leading-relaxed line-clamp-2">
                       {issue.description}
                     </p>
 
-                    <div className="flex items-center gap-1.5 text-xs text-[#5e606b] pt-0.5">
+                    <div className="flex items-center gap-1.5 text-xs text-[#5e606b] pt-1">
                       <MapPin className="w-3.5 h-3.5 text-[#4f46c8] shrink-0" />
                       <span className="truncate">{issue.location}</span>
                     </div>
                   </div>
                 </div>
 
-                {/* Progress Bar & Footer CTA */}
-                <div className="px-4 pb-4 pt-2 space-y-3 border-t border-[#f4f5f8]">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] font-medium text-[#858793]">
-                      <span>Open</span>
-                      <span>In Progress</span>
-                      <span>Resolved</span>
-                    </div>
-                    <div className="w-full h-1.5 rounded-full bg-[#e8e8fb] overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          issue.status === 'Resolved'
-                            ? 'bg-[#25985a]'
-                            : issue.status === 'In Progress'
-                            ? 'bg-[#344da6]'
-                            : 'bg-[#4f46c8]'
-                        }`}
-                        style={{ width: `${stepProgress}%` }}
-                      />
-                    </div>
+                {/* Progress Bar & Action Footer */}
+                <div className="px-4 pb-4 pt-3 space-y-3 border-t border-[#f4f5f8]">
+                  <div className="w-full h-1.5 rounded-full bg-[#e8e8fb] overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        issue.status === 'Resolved'
+                          ? 'bg-[#25985a]'
+                          : issue.status === 'In Progress'
+                          ? 'bg-[#344da6]'
+                          : 'bg-[#4f46c8]'
+                      }`}
+                      style={{ width: `${stepProgress}%` }}
+                    />
                   </div>
 
                   <button
@@ -455,11 +457,11 @@ export const UserPortalView: React.FC<UserPortalViewProps> = ({
                     onClick={() => onNavigateTrackId(issue.id)}
                     className="w-full h-9 px-3 rounded-[8px] border border-[#d8dbe2] bg-[#f7f8fb] hover:bg-[#e8e8fb]/60 hover:border-[#4f46c8] text-xs font-semibold text-[#17181d] hover:text-[#4f46c8] inline-flex items-center justify-between transition-colors cursor-pointer"
                   >
-                    <span>Inspect Real Map &amp; Officer Timeline</span>
+                    <span>View Real Photo, Map &amp; Audit Log</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
-              </div>
+              </article>
             );
           })}
         </div>
