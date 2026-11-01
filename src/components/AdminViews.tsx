@@ -35,6 +35,7 @@ import { AuthorityShieldIllustration } from './Illustrations';
 import { HaldiaIssueMap, HaldiaSingleIssueMap } from './HaldiaIssueMap';
 import { CivicRealImage } from './CivicRealImage';
 import { IssueActivityLog } from './IssueActivityLog';
+import { AdminAnalyticsCharts, resolveHaldiaWard } from './AdminAnalyticsCharts';
 import { getRealPhotoForCategory } from '../lib/syntheticAssets';
 import {
   MASTER_AUTHORITY_KEY,
@@ -75,10 +76,11 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
 
   // Filters & Sort
   const [categoryFilter, setCategoryFilter] = useState<string>('All');
+  const [wardFilter, setWardFilter] = useState<string>('All');
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [sortBy, setSortBy] = useState<'priority' | 'newest' | 'oldest'>('priority');
   const [searchQuery, setSearchQuery] = useState('');
-  const [visualMode, setVisualMode] = useState<'chart' | 'map'>('map');
+  const [visualMode, setVisualMode] = useState<'chart' | 'map' | 'both'>('chart');
 
   // Detail & Status Transition State
   const [detailTimeline, setDetailTimeline] = useState<TimelineEvent[]>([]);
@@ -376,6 +378,10 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   }
 
   const filteredIssues = issues.filter((item) => {
+    if (wardFilter !== 'All') {
+      const ward = resolveHaldiaWard(item.location, item.title);
+      if (ward.wardCode !== wardFilter) return false;
+    }
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -387,7 +393,6 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
   });
 
   const selectedIssue = issues.find((i) => i.id === selectedIssueId) || null;
-  const categories: IssueCategory[] = ['Road', 'Water', 'Electricity', 'Sanitation', 'Other'];
 
   return (
     <div className="space-y-6">
@@ -491,20 +496,22 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
         </div>
       )}
 
-      {/* Category & Status Bar Chart + Interactive Haldia Map Toggle (R4 + R13) */}
+      {/* Recharts Category & Ward Analytics + Interactive Haldia Map Toggle */}
       {stats && (
         <div className="bg-white border border-[#d8dbe2] rounded-[12px] p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#d8dbe2] pb-3">
             <div>
               <h2 className="text-base font-semibold text-[#17181d]">
                 {visualMode === 'chart'
-                  ? 'Department Workload by Category & Status (R4)'
-                  : 'Haldia Geographic Issue Distribution (R13 Map View)'}
+                  ? 'Municipal Analytics: Category Distribution & Ward Report Volume'
+                  : visualMode === 'both'
+                  ? 'Municipal Analytics & Haldia Geographic Distribution'
+                  : 'Haldia Geographic Issue Distribution (Map View)'}
               </h2>
               <p className="text-xs text-[#5e606b]">
-                {visualMode === 'chart'
-                  ? 'Click any category bar to filter the dispatch queue below'
-                  : 'Click any issue marker on the OpenStreetMap canvas to open its dispatch drawer'}
+                {visualMode === 'map'
+                  ? 'Click any issue marker on the OpenStreetMap canvas to open its dispatch drawer'
+                  : 'Interactive Recharts breakdown of issue categories and report volume per Haldia ward'}
               </p>
             </div>
 
@@ -519,7 +526,19 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                 }`}
               >
                 <BarChart3 className="w-3.5 h-3.5" />
-                <span>Category Chart</span>
+                <span>Recharts Analytics</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisualMode('both')}
+                className={`px-3 py-1.5 rounded-[6px] text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                  visualMode === 'both'
+                    ? 'bg-white text-[#4f46c8] shadow-xs'
+                    : 'text-[#5e606b] hover:text-[#17181d]'
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <span>Charts + Map</span>
               </button>
               <button
                 type="button"
@@ -531,110 +550,30 @@ export const AdminViews: React.FC<AdminViewsProps> = ({
                 }`}
               >
                 <MapIcon className="w-3.5 h-3.5" />
-                <span>Haldia Map (R13)</span>
+                <span>Haldia Map</span>
               </button>
             </div>
           </div>
 
-          {visualMode === 'chart' ? (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                {categories.map((cat) => {
-                  const totalCat = stats.by_category[cat] || 0;
-                  const openCount = stats.by_category_status[cat]?.Open || 0;
-                  const progCount = stats.by_category_status[cat]?.['In Progress'] || 0;
-                  const resCount = stats.by_category_status[cat]?.Resolved || 0;
-                  const maxTotal = Math.max(...Object.values(stats.by_category), 1);
-
-                  const openPct = Math.round((openCount / maxTotal) * 100);
-                  const progPct = Math.round((progCount / maxTotal) * 100);
-                  const resPct = Math.round((resCount / maxTotal) * 100);
-                  const isSelected = categoryFilter === cat;
-
-                  return (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() => setCategoryFilter(isSelected ? 'All' : cat)}
-                      className={`text-left p-3.5 rounded-[10px] border transition-colors cursor-pointer ${
-                        isSelected
-                          ? 'border-[#4f46c8] bg-[#e8e8fb]/40'
-                          : 'border-[#d8dbe2] bg-[#f7f8fb] hover:border-[#c7cad3]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-semibold text-[#17181d]">{cat}</span>
-                        <span className="text-sm font-bold font-mono tabular-nums text-[#4f46c8]">
-                          {totalCat}
-                        </span>
-                      </div>
-
-                      <div className="w-full h-3 rounded-[4px] bg-[#e4e6ed] overflow-hidden flex">
-                        {openCount > 0 && (
-                          <div
-                            style={{ width: `${openPct}%` }}
-                            className="bg-[#a33e3e] h-full"
-                            title={`Open: ${openCount}`}
-                          />
-                        )}
-                        {progCount > 0 && (
-                          <div
-                            style={{ width: `${progPct}%` }}
-                            className="bg-[#344da6] h-full"
-                            title={`In Progress: ${progCount}`}
-                          />
-                        )}
-                        {resCount > 0 && (
-                          <div
-                            style={{ width: `${resPct}%` }}
-                            className="bg-[#25985a] h-full"
-                            title={`Resolved: ${resCount}`}
-                          />
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-[#5e606b] mt-2">
-                        <span>Open: {openCount}</span>
-                        <span>Prog: {progCount}</span>
-                        <span>Res: {resCount}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#5e606b] pt-1">
-                <div className="flex items-center gap-4">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#a33e3e] inline-block" />
-                    <span>Open</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#344da6] inline-block" />
-                    <span>In Progress</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#25985a] inline-block" />
-                    <span>Resolved</span>
-                  </span>
-                </div>
-                {categoryFilter !== 'All' && (
-                  <button
-                    type="button"
-                    onClick={() => setCategoryFilter('All')}
-                    className="text-xs font-semibold text-[#4f46c8] hover:underline cursor-pointer"
-                  >
-                    Clear category filter ({categoryFilter})
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <HaldiaIssueMap
-              issues={filteredIssues}
-              selectedIssueId={selectedIssueId}
-              onSelectIssue={(id) => onSelectIssue(id)}
+          {(visualMode === 'chart' || visualMode === 'both') && (
+            <AdminAnalyticsCharts
+              issues={issues}
+              stats={stats}
+              selectedCategory={categoryFilter}
+              onSelectCategory={(cat) => setCategoryFilter(cat)}
+              selectedWard={wardFilter}
+              onSelectWard={(ward) => setWardFilter(ward)}
             />
+          )}
+
+          {(visualMode === 'map' || visualMode === 'both') && (
+            <div className={visualMode === 'both' ? 'pt-4 border-t border-[#e4e6ed]' : ''}>
+              <HaldiaIssueMap
+                issues={filteredIssues}
+                selectedIssueId={selectedIssueId}
+                onSelectIssue={(id) => onSelectIssue(id)}
+              />
+            </div>
           )}
         </div>
       )}
