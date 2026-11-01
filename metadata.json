@@ -1,7 +1,9 @@
 {
   "name": "CivicPulse Haldia — Civic Issue Tracker",
   "description": "Public civic issue reporting, automated keyword & multilingual triage, duplicate cluster detection, priority scoring, and ward authority dispatch dashboard for Haldia.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "geolocation"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

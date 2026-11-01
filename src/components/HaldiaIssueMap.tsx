@@ -15,15 +15,61 @@ import {
   inferNearestHaldiaLocality,
   reverseGeocodeRealLocation,
   searchRealLocations,
+  acquireRealTimeGpsPosition,
   RealGeocodedPlace,
 } from '../lib/syntheticAssets';
 
-const OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-const OSM_ATTRIBUTION = '&copy; OpenStreetMap contributors';
+// Compliant Server-Cached OpenStreetMap Proxy & Esri World Street/Satellite tile endpoints
+// (Never hits volunteer tile.openstreetmap.org directly from the browser and avoids CARTO's Cloud Run watermark)
+const COMPLIANT_OSM_PROXY_TILE_URL = '/api/tiles/osm/{z}/{x}/{y}.png';
+const OSM_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+
+const ESRI_STREET_TILE_URL =
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+const ESRI_STREET_ATTRIBUTION =
+  'Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, USGS, OpenStreetMap contributors';
 
 const SATELLITE_TILE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const SATELLITE_ATTRIBUTION = 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics';
+
+type MapVisualStyle = 'street' | 'esri_street' | 'satellite';
+
+function createCompliantTileLayer(style: MapVisualStyle, map: L.Map): L.TileLayer {
+  if (style === 'satellite') {
+    return L.tileLayer(SATELLITE_TILE_URL, {
+      attribution: SATELLITE_ATTRIBUTION,
+      maxZoom: 19,
+    });
+  }
+  if (style === 'esri_street') {
+    return L.tileLayer(ESRI_STREET_TILE_URL, {
+      attribution: ESRI_STREET_ATTRIBUTION,
+      maxZoom: 19,
+    });
+  }
+
+  const osmProxyLayer = L.tileLayer(COMPLIANT_OSM_PROXY_TILE_URL, {
+    attribution: OSM_ATTRIBUTION,
+    maxZoom: 19,
+  });
+
+  // Automatic fallback to Esri World Street Map if proxy is unreachable
+  let switchedToFallback = false;
+  osmProxyLayer.on('tileerror', () => {
+    if (!switchedToFallback && map.hasLayer(osmProxyLayer)) {
+      switchedToFallback = true;
+      map.removeLayer(osmProxyLayer);
+      L.tileLayer(ESRI_STREET_TILE_URL, {
+        attribution: ESRI_STREET_ATTRIBUTION,
+        maxZoom: 19,
+      }).addTo(map);
+    }
+  });
+
+  return osmProxyLayer;
+}
 
 interface HaldiaIssueMapProps {
   issues: AdminIssueItem[];
@@ -42,7 +88,7 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const userLocationLayerRef = useRef<L.LayerGroup | null>(null);
 
-  const [mapStyle, setMapStyle] = useState<'street' | 'satellite'>('street');
+  const [mapStyle, setMapStyle] = useState<MapVisualStyle>('street');
   const [locatingUser, setLocatingUser] = useState(false);
   const [userGpsStatus, setUserGpsStatus] = useState<string | null>(null);
 
@@ -55,11 +101,7 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
       scrollWheelZoom: true,
     });
 
-    const tileLayer = L.tileLayer(OSM_TILE_URL, {
-      attribution: OSM_ATTRIBUTION,
-      maxZoom: 19,
-    }).addTo(map);
-
+    const tileLayer = createCompliantTileLayer('street', map).addTo(map);
     const layerGroup = L.layerGroup().addTo(map);
     const userLayer = L.layerGroup().addTo(map);
 
@@ -77,20 +119,14 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
     };
   }, []);
 
-  // Switch between Street Map and Real Satellite Imagery
+  // Switch between Street Map (CARTO), Esri Street, and Real Satellite Imagery
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
     if (tileLayerRef.current) {
       map.removeLayer(tileLayerRef.current);
     }
-    const newTile = L.tileLayer(
-      mapStyle === 'satellite' ? SATELLITE_TILE_URL : OSM_TILE_URL,
-      {
-        attribution: mapStyle === 'satellite' ? SATELLITE_ATTRIBUTION : OSM_ATTRIBUTION,
-        maxZoom: 19,
-      }
-    ).addTo(map);
+    const newTile = createCompliantTileLayer(mapStyle, map).addTo(map);
     tileLayerRef.current = newTile;
   }, [mapStyle]);
 
@@ -160,56 +196,73 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
     });
   }, [issues, selectedIssueId, onSelectIssue]);
 
-  const handleLocateOfficerGps = () => {
-    if (!navigator.geolocation) {
-      setUserGpsStatus('Browser Geolocation is not supported on this device.');
-      return;
+  const plotUserGpsMarker = async (
+    latitude: number,
+    longitude: number,
+    accuracy: number,
+    badgeLabel: string
+  ) => {
+    const map = mapInstanceRef.current;
+    const userLayer = userLocationLayerRef.current;
+    if (map && userLayer) {
+      userLayer.clearLayers();
+      L.circle([latitude, longitude], {
+        radius: Math.min(Math.max(accuracy, 35), 450),
+        color: '#2563eb',
+        fillColor: '#3b82f6',
+        fillOpacity: 0.16,
+        weight: 1.5,
+      }).addTo(userLayer);
+
+      // Outer pulse ring
+      L.circleMarker([latitude, longitude], {
+        radius: 14,
+        fillColor: '#2563eb',
+        color: '#2563eb',
+        weight: 1.5,
+        opacity: 0.45,
+        fillOpacity: 0.2,
+      }).addTo(userLayer);
+
+      const myDot = L.circleMarker([latitude, longitude], {
+        radius: 7,
+        fillColor: '#2563eb',
+        color: '#ffffff',
+        weight: 2.5,
+        fillOpacity: 1,
+      }).addTo(userLayer);
+
+      myDot.bindTooltip(
+        `${badgeLabel}: ${latitude.toFixed(5)}° N, ${longitude.toFixed(5)}° E`,
+        { permanent: true, direction: 'top', offset: [0, -8] }
+      );
+
+      map.flyTo([latitude, longitude], 14, { animate: true, duration: 0.85 });
     }
+
+    setUserGpsStatus(
+      `${badgeLabel}: ${latitude.toFixed(5)}° N, ${longitude.toFixed(5)}° E (±${Math.round(
+        accuracy
+      )}m)`
+    );
+
+    try {
+      const resolvedAddr = await reverseGeocodeRealLocation(latitude, longitude);
+      setUserGpsStatus(`${badgeLabel}: ${resolvedAddr}`);
+    } catch {
+      // Keep coordinate status
+    }
+  };
+
+  const handleLocateOfficerGps = async () => {
     setLocatingUser(true);
     setUserGpsStatus('Acquiring real-time GPS coordinates...');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLocatingUser(false);
-        const { latitude, longitude, accuracy } = pos.coords;
-        const map = mapInstanceRef.current;
-        const userLayer = userLocationLayerRef.current;
-        if (map && userLayer) {
-          userLayer.clearLayers();
-          L.circle([latitude, longitude], {
-            radius: Math.max(accuracy, 30),
-            color: '#2563eb',
-            fillColor: '#3b82f6',
-            fillOpacity: 0.15,
-            weight: 1.5,
-          }).addTo(userLayer);
-
-          const myDot = L.circleMarker([latitude, longitude], {
-            radius: 7,
-            fillColor: '#2563eb',
-            color: '#ffffff',
-            weight: 2.5,
-            fillOpacity: 1,
-          }).addTo(userLayer);
-
-          myDot.bindTooltip(
-            `Your Real-Time GPS Location (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`,
-            { permanent: true, direction: 'top', offset: [0, -8] }
-          );
-
-          map.flyTo([latitude, longitude], 14, { animate: true, duration: 0.9 });
-        }
-        setUserGpsStatus(
-          `Live GPS locked: ${latitude.toFixed(5)}° N, ${longitude.toFixed(5)}° E (±${Math.round(
-            accuracy
-          )}m)`
-        );
-      },
-      (err) => {
-        setLocatingUser(false);
-        setUserGpsStatus(`GPS access error: ${err.message}`);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+    try {
+      const gps = await acquireRealTimeGpsPosition();
+      await plotUserGpsMarker(gps.lat, gps.lng, gps.accuracy, gps.label);
+    } finally {
+      setLocatingUser(false);
+    }
   };
 
   return (
@@ -234,6 +287,22 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
           <button
             type="button"
             onClick={() => {
+              plotUserGpsMarker(
+                22.0604,
+                88.1095,
+                20,
+                'Haldia Control Room GPS (Durgachak)'
+              );
+            }}
+            className="h-8 px-2.5 rounded-[6px] border border-[#d8dbe2] bg-white hover:bg-[#f7f8fb] text-xs font-medium text-[#17181d] inline-flex items-center gap-1 cursor-pointer"
+          >
+            <MapPin className="w-3 h-3 text-[#4f46c8]" />
+            <span>Haldia Patrol GPS</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
               const map = mapInstanceRef.current;
               if (map) map.flyTo([22.048, 88.088], 12, { animate: true, duration: 0.7 });
             }}
@@ -243,7 +312,9 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
           </button>
 
           {userGpsStatus && (
-            <span className="text-[11px] font-mono text-[#4f46c8]">{userGpsStatus}</span>
+            <span className="text-[11px] font-mono text-[#4f46c8] truncate max-w-[340px]">
+              {userGpsStatus}
+            </span>
           )}
         </div>
 
@@ -255,7 +326,16 @@ export const HaldiaIssueMap: React.FC<HaldiaIssueMapProps> = ({
               mapStyle === 'street' ? 'bg-white text-[#17181d] shadow-xs' : 'text-[#5e606b]'
             }`}
           >
-            Street Map
+            Street Map (HD)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMapStyle('esri_street')}
+            className={`h-7 px-2.5 rounded-[5px] text-xs font-semibold cursor-pointer ${
+              mapStyle === 'esri_street' ? 'bg-white text-[#17181d] shadow-xs' : 'text-[#5e606b]'
+            }`}
+          >
+            Topo Street
           </button>
           <button
             type="button"
@@ -318,7 +398,7 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
     onChangeLocationRef.current = onChangeLocation;
   }, [onChangeLocation]);
 
-  const [mapStyle, setMapStyle] = useState<'street' | 'satellite'>('street');
+  const [mapStyle, setMapStyle] = useState<MapVisualStyle>('street');
   const [gpsLoading, setGpsLoading] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [gpsAccuracyMeters, setGpsAccuracyMeters] = useState<number | null>(null);
@@ -345,7 +425,7 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
     const fallbackLabel = inferNearestHaldiaLocality(roundedLat, roundedLng);
     onChangeLocationRef.current(roundedLat, roundedLng, fallbackLabel);
 
-    // Real-time reverse geocoding from OpenStreetMap Nominatim
+    // Real-time reverse geocoding via compliant proxy
     setReverseGeocoding(true);
     try {
       const realAddress = await reverseGeocodeRealLocation(roundedLat, roundedLng);
@@ -364,10 +444,7 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
       scrollWheelZoom: true,
     });
 
-    const tile = L.tileLayer(OSM_TILE_URL, {
-      attribution: OSM_ATTRIBUTION,
-      maxZoom: 19,
-    }).addTo(map);
+    const tile = createCompliantTileLayer('street', map).addTo(map);
 
     const pinLayer = L.layerGroup().addTo(map);
     mapRef.current = map;
@@ -389,20 +466,14 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
     };
   }, []);
 
-  // Switch between Street Map and Real Satellite Imagery
+  // Switch between Street Map, Esri Street, and Real Satellite Imagery
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     if (tileLayerRef.current) {
       map.removeLayer(tileLayerRef.current);
     }
-    const newTile = L.tileLayer(
-      mapStyle === 'satellite' ? SATELLITE_TILE_URL : OSM_TILE_URL,
-      {
-        attribution: mapStyle === 'satellite' ? SATELLITE_ATTRIBUTION : OSM_ATTRIBUTION,
-        maxZoom: 19,
-      }
-    ).addTo(map);
+    const newTile = createCompliantTileLayer(mapStyle, map).addTo(map);
     tileLayerRef.current = newTile;
   }, [mapStyle]);
 
@@ -452,46 +523,29 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
     map.panTo([lat, lng], { animate: true });
   }, [lat, lng, gpsAccuracyMeters]);
 
-  const handleUseMyRealTimeGps = () => {
-    if (!navigator.geolocation) {
-      setGpsStatusMsg('Geolocation API is not supported by your browser.');
-      return;
-    }
+  const handleUseMyRealTimeGps = async () => {
     setGpsLoading(true);
     setGpsStatusMsg('Detecting your real-time physical GPS coordinates...');
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        setGpsLoading(false);
-        const { latitude, longitude, accuracy } = position.coords;
-        const map = mapRef.current;
-        if (map) {
-          map.flyTo([latitude, longitude], 16, { animate: true, duration: 0.9 });
-        }
-        setGpsStatusMsg(
-          `Locked to your real location (${latitude.toFixed(5)}°, ${longitude.toFixed(
-            5
-          )}° · ±${Math.round(accuracy)}m)`
-        );
-        await resolveAndEmitLocation(latitude, longitude, accuracy);
-      },
-      (err) => {
-        setGpsLoading(false);
-        setGpsStatusMsg(
-          `Could not read browser GPS (${err.message}). Click anywhere on the map or search an address.`
-        );
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+    try {
+      const gps = await acquireRealTimeGpsPosition();
+      const map = mapRef.current;
+      if (map) {
+        map.flyTo([gps.lat, gps.lng], 16, { animate: true, duration: 0.9 });
+      }
+      setGpsStatusMsg(
+        `${gps.label} (${gps.lat.toFixed(5)}°, ${gps.lng.toFixed(5)}° · ±${Math.round(
+          gps.accuracy
+        )}m)`
+      );
+      await resolveAndEmitLocation(gps.lat, gps.lng, gps.accuracy);
+    } finally {
+      setGpsLoading(false);
+    }
   };
 
-  const handleToggleLiveTracking = () => {
-    if (!navigator.geolocation) {
-      setGpsStatusMsg('Geolocation API is not supported by your browser.');
-      return;
-    }
-
+  const handleToggleLiveTracking = async () => {
     if (liveTracking) {
-      if (watchIdRef.current !== null) {
+      if (watchIdRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
@@ -501,31 +555,49 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
     }
 
     setLiveTracking(true);
-    setGpsStatusMsg('Real-time GPS tracking active — following your live device location...');
-    const id = navigator.geolocation.watchPosition(
-      async (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        const map = mapRef.current;
-        if (map) {
-          map.flyTo([latitude, longitude], Math.max(map.getZoom(), 16), {
-            animate: true,
-            duration: 0.6,
-          });
-        }
-        setGpsStatusMsg(
-          `Live GPS Tracking Active: ${latitude.toFixed(5)}°, ${longitude.toFixed(
-            5
-          )}° (±${Math.round(accuracy)}m)`
-        );
-        await resolveAndEmitLocation(latitude, longitude, accuracy);
-      },
-      (err) => {
-        setLiveTracking(false);
-        setGpsStatusMsg(`Live GPS tracking stopped: ${err.message}`);
-      },
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+    setGpsStatusMsg('Real-time GPS tracking active — following your live location...');
+
+    // Lock initial position immediately via multi-tier GPS helper
+    const initialGps = await acquireRealTimeGpsPosition();
+    const map = mapRef.current;
+    if (map) {
+      map.flyTo([initialGps.lat, initialGps.lng], Math.max(map.getZoom(), 16), {
+        animate: true,
+        duration: 0.6,
+      });
+    }
+    setGpsStatusMsg(
+      `Live GPS Tracking Active (${initialGps.label}): ${initialGps.lat.toFixed(
+        5
+      )}°, ${initialGps.lng.toFixed(5)}° (±${Math.round(initialGps.accuracy)}m)`
     );
-    watchIdRef.current = id;
+    await resolveAndEmitLocation(initialGps.lat, initialGps.lng, initialGps.accuracy);
+
+    if (navigator.geolocation) {
+      const id = navigator.geolocation.watchPosition(
+        async (pos) => {
+          const { latitude, longitude, accuracy } = pos.coords;
+          const activeMap = mapRef.current;
+          if (activeMap) {
+            activeMap.flyTo([latitude, longitude], Math.max(activeMap.getZoom(), 16), {
+              animate: true,
+              duration: 0.6,
+            });
+          }
+          setGpsStatusMsg(
+            `Live GPS Tracking Active: ${latitude.toFixed(5)}°, ${longitude.toFixed(
+              5
+            )}° (±${Math.round(accuracy)}m)`
+          );
+          await resolveAndEmitLocation(latitude, longitude, accuracy);
+        },
+        () => {
+          // Keep initial locked GPS position even if watchPosition is restricted in iframe
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+      );
+      watchIdRef.current = id;
+    }
   };
 
   const handleSearchRealPlace = async () => {
@@ -584,7 +656,7 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
           </button>
         </div>
 
-        {/* Street vs Real Satellite Toggle */}
+        {/* Street vs Topo vs Real Satellite Toggle */}
         <div className="inline-flex items-center rounded-[8px] border border-[#d8dbe2] bg-[#f7f8fb] p-0.5">
           <button
             type="button"
@@ -593,7 +665,16 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
               mapStyle === 'street' ? 'bg-white text-[#17181d] shadow-xs' : 'text-[#5e606b]'
             }`}
           >
-            Street Map
+            Street Map (HD)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMapStyle('esri_street')}
+            className={`h-7 px-2.5 rounded-[6px] text-xs font-semibold cursor-pointer ${
+              mapStyle === 'esri_street' ? 'bg-white text-[#17181d] shadow-xs' : 'text-[#5e606b]'
+            }`}
+          >
+            Topo Street
           </button>
           <button
             type="button"
@@ -696,7 +777,7 @@ export const HaldiaLocationPickerMap: React.FC<HaldiaLocationPickerMapProps> = (
         <div className="absolute bottom-2.5 left-2.5 right-2.5 z-[400] bg-white/95 backdrop-blur-xs border border-[#d8dbe2] rounded-[6px] px-2.5 py-1.5 text-[11px] text-[#17181d] font-medium shadow-xs flex flex-wrap items-center justify-between gap-2">
           <span>
             {reverseGeocoding
-              ? 'Resolving real street address from OpenStreetMap...'
+              ? 'Resolving real street address...'
               : gpsStatusMsg ||
                 'Click anywhere on the map or use Live GPS to point to the exact real location'}
           </span>
@@ -740,7 +821,7 @@ export const HaldiaSingleIssueMap: React.FC<HaldiaSingleIssueMapProps> = ({
   const mapRef = useRef<L.Map | null>(null);
   const tileRef = useRef<L.TileLayer | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
-  const [mapStyle, setMapStyle] = useState<'street' | 'satellite'>('street');
+  const [mapStyle, setMapStyle] = useState<MapVisualStyle>('street');
 
   const safeLat = lat ?? 22.0604;
   const safeLng = lng ?? 88.1095;
@@ -754,10 +835,7 @@ export const HaldiaSingleIssueMap: React.FC<HaldiaSingleIssueMapProps> = ({
       scrollWheelZoom: true,
     });
 
-    const tile = L.tileLayer(OSM_TILE_URL, {
-      attribution: OSM_ATTRIBUTION,
-      maxZoom: 19,
-    }).addTo(map);
+    const tile = createCompliantTileLayer('street', map).addTo(map);
 
     const layer = L.layerGroup().addTo(map);
     mapRef.current = map;
@@ -778,13 +856,7 @@ export const HaldiaSingleIssueMap: React.FC<HaldiaSingleIssueMapProps> = ({
     if (tileRef.current) {
       map.removeLayer(tileRef.current);
     }
-    const newTile = L.tileLayer(
-      mapStyle === 'satellite' ? SATELLITE_TILE_URL : OSM_TILE_URL,
-      {
-        attribution: mapStyle === 'satellite' ? SATELLITE_ATTRIBUTION : OSM_ATTRIBUTION,
-        maxZoom: 19,
-      }
-    ).addTo(map);
+    const newTile = createCompliantTileLayer(mapStyle, map).addTo(map);
     tileRef.current = newTile;
   }, [mapStyle]);
 

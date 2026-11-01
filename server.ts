@@ -253,9 +253,12 @@ async function startServer() {
   );
 
   // Security headers middleware (S10) & 16KB body cap (S5)
+  // Note: Referrer-Policy MUST be strict-origin-when-cross-origin (not no-referrer)
+  // to comply with OpenStreetMap's Tile Usage Policy which blocks requests missing a Referer header.
   app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(self *)');
     const contentLength = Number(req.headers['content-length'] || 0);
     if (contentLength > 16 * 1024) {
       res.status(413).json({ error: 'Payload exceeds 16 KB size limit.' });
@@ -265,6 +268,190 @@ async function startServer() {
   });
 
   app.use(express.json({ limit: '16kb' }));
+
+  // Compliant cached geocoding & map tile proxy (follows OSM Tile & Nominatim Usage Policy with custom User-Agent, Referer & 7-day cache)
+  const geocodeCache = new Map<string, { data: unknown; expiresAt: number }>();
+  const tileMemoryCache = new Map<string, { buffer: Buffer; contentType: string; expiresAt: number }>();
+  const OSM_COMPLIANT_HEADERS = {
+    Accept: 'application/json',
+    'Accept-Language': 'en',
+    'User-Agent': 'CivicPulseHaldia/1.0 (Haldia Municipal Civic Issue Tracker; https://haldiamunicipality.org)',
+    Referer: 'https://haldiamunicipality.org/',
+  };
+
+  app.get('/api/tiles/osm/:z/:x/:y', async (req: Request, res: Response) => {
+    const z = Number(req.params.z);
+    const x = Number(req.params.x);
+    const rawY = String(req.params.y || '').replace(/\.png$/i, '');
+    const y = Number(rawY);
+
+    if (
+      Number.isNaN(z) ||
+      Number.isNaN(x) ||
+      Number.isNaN(y) ||
+      z < 0 ||
+      z > 20 ||
+      x < 0 ||
+      y < 0
+    ) {
+      res.status(400).end();
+      return;
+    }
+
+    const cacheKey = `${z}/${x}/${y}`;
+    const memHit = tileMemoryCache.get(cacheKey);
+    if (memHit && memHit.expiresAt > Date.now()) {
+      res.setHeader('Content-Type', memHit.contentType);
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+      res.status(200).send(memHit.buffer);
+      return;
+    }
+
+    // Check local disk cache under /public/assets/tiles
+    const tileFile = path.join(process.cwd(), 'public', 'assets', 'tiles', `${z}_${x}_${y}.png`);
+    if (fs.existsSync(tileFile)) {
+      try {
+        const diskBuf = fs.readFileSync(tileFile);
+        tileMemoryCache.set(cacheKey, {
+          buffer: diskBuf,
+          contentType: 'image/png',
+          expiresAt: Date.now() + 1000 * 60 * 60 * 24,
+        });
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+        res.status(200).send(diskBuf);
+        return;
+      } catch {
+        // Continue to upstream fetch
+      }
+    }
+
+    try {
+      const osmUrl = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+      const upstream = await fetch(osmUrl, {
+        headers: {
+          Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'User-Agent':
+            'CivicPulseHaldia/1.0 (Haldia Municipal Civic Issue Tracker; https://haldiamunicipality.org)',
+          Referer: 'https://haldiamunicipality.org/',
+        },
+      });
+
+      if (upstream.ok) {
+        const arrBuf = await upstream.arrayBuffer();
+        const buffer = Buffer.from(arrBuf);
+        const contentType = upstream.headers.get('content-type') || 'image/png';
+
+        if (tileMemoryCache.size > 600) {
+          const oldestKey = tileMemoryCache.keys().next().value;
+          if (oldestKey) tileMemoryCache.delete(oldestKey);
+        }
+        tileMemoryCache.set(cacheKey, {
+          buffer,
+          contentType,
+          expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 7,
+        });
+
+        try {
+          const tilesDir = path.join(process.cwd(), 'public', 'assets', 'tiles');
+          fs.mkdirSync(tilesDir, { recursive: true });
+          fs.writeFileSync(tileFile, buffer);
+        } catch {
+          // Ignore disk cache write errors
+        }
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+        res.status(200).send(buffer);
+        return;
+      }
+    } catch {
+      // Fall through to Esri World Street Map fallback
+    }
+
+    // Fallback: Esri World Street Map (note {z}/{y}/{x} order in ArcGIS)
+    try {
+      const esriUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${z}/${y}/${x}`;
+      const fallbackRes = await fetch(esriUrl);
+      if (fallbackRes.ok) {
+        const arrBuf = await fallbackRes.arrayBuffer();
+        const buffer = Buffer.from(arrBuf);
+        const contentType = fallbackRes.headers.get('content-type') || 'image/jpeg';
+        tileMemoryCache.set(cacheKey, {
+          buffer,
+          contentType,
+          expiresAt: Date.now() + 1000 * 60 * 60 * 24,
+        });
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=604800');
+        res.status(200).send(buffer);
+        return;
+      }
+    } catch {
+      // Ignore fallback error
+    }
+
+    res.status(404).end();
+  });
+
+  app.get('/api/geocode/reverse', async (req: Request, res: Response) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) {
+      res.status(400).json({ error: 'Invalid lat/lng parameters.' });
+      return;
+    }
+    const cacheKey = `rev:${lat.toFixed(4)},${lng.toFixed(4)}`;
+    const cached = geocodeCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.status(200).json(cached.data);
+      return;
+    }
+    try {
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
+        lat
+      )}&lon=${encodeURIComponent(lng)}&zoom=18&addressdetails=1`;
+      const upstream = await fetch(url, { headers: OSM_COMPLIANT_HEADERS });
+      if (upstream.ok) {
+        const data = await upstream.json();
+        geocodeCache.set(cacheKey, { data, expiresAt: Date.now() + 1000 * 60 * 60 });
+        res.status(200).json(data);
+        return;
+      }
+    } catch {
+      // Fall through to 200 empty fallback
+    }
+    res.status(200).json({});
+  });
+
+  app.get('/api/geocode/search', async (req: Request, res: Response) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length < 2) {
+      res.status(200).json([]);
+      return;
+    }
+    const cacheKey = `search:${q.toLowerCase()}`;
+    const cached = geocodeCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.status(200).json(cached.data);
+      return;
+    }
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
+        q
+      )}&limit=5&addressdetails=1`;
+      const upstream = await fetch(url, { headers: OSM_COMPLIANT_HEADERS });
+      if (upstream.ok) {
+        const data = await upstream.json();
+        geocodeCache.set(cacheKey, { data, expiresAt: Date.now() + 1000 * 60 * 60 });
+        res.status(200).json(data);
+        return;
+      }
+    } catch {
+      // Fall through to 200 empty fallback
+    }
+    res.status(200).json([]);
+  });
 
   // 1. Health endpoint
   app.get('/api/health', (_req: Request, res: Response) => {
@@ -992,8 +1179,13 @@ async function startServer() {
 
   // Mount Vite middleware in development or static dist in production
   if (process.env.NODE_ENV !== 'production') {
+    process.env.DISABLE_HMR = 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
