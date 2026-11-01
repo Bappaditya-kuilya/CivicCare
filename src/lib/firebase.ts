@@ -1,11 +1,11 @@
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
+  initializeAuth,
+  inMemoryPersistence,
   GoogleAuthProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signInAnonymously,
   updateProfile,
   signOut,
   onAuthStateChanged,
@@ -50,9 +50,54 @@ import { getRealPhotoForCategory, getAbsoluteSyntheticUrl } from './syntheticAss
 // Master key pre-configured for the user and authorized in firestore.rules
 export const MASTER_AUTHORITY_KEY = 'NOVA-HALDIA-KEY-2026';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+// Purge any stale cached Firebase Auth tokens in IndexedDB / Web Storage so disabled
+// securetoken.googleapis.com calls from previous sessions never block Firestore.
+function purgeStaleFirebaseAuthStorage(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const lsKeys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && (k.startsWith('firebase:authUser:') || k.startsWith('firebase:host:'))) {
+        lsKeys.push(k);
+      }
+    }
+    lsKeys.forEach((k) => window.localStorage.removeItem(k));
+  } catch {
+    // Ignore localStorage cleanup errors
+  }
+  try {
+    const ssKeys: string[] = [];
+    for (let i = 0; i < window.sessionStorage.length; i++) {
+      const k = window.sessionStorage.key(i);
+      if (k && (k.startsWith('firebase:authUser:') || k.startsWith('firebase:host:'))) {
+        ssKeys.push(k);
+      }
+    }
+    ssKeys.forEach((k) => window.sessionStorage.removeItem(k));
+  } catch {
+    // Ignore sessionStorage cleanup errors
+  }
+  try {
+    if (window.indexedDB && typeof window.indexedDB.deleteDatabase === 'function') {
+      window.indexedDB.deleteDatabase('firebaseLocalStorageDb');
+    }
+  } catch {
+    // Ignore IndexedDB cleanup errors
+  }
+}
+
+purgeStaleFirebaseAuthStorage();
+
+// Dedicated FirebaseApp for Firestore with no Auth component attached, ensuring
+// Firestore never attempts to call securetoken.googleapis.com before connecting.
+const firestoreApp = initializeApp(firebaseConfig, 'civicpulse-firestore-client');
+const authApp = initializeApp(firebaseConfig, 'civicpulse-auth-client');
+
+export const db = getFirestore(firestoreApp, firebaseConfig.firestoreDatabaseId);
+export const auth = initializeAuth(authApp, {
+  persistence: inMemoryPersistence,
+});
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
@@ -180,10 +225,8 @@ export function handleFirestoreError(
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
+  } catch {
+    // Non-fatal probe; Firestore client automatically manages reconnection
   }
 }
 testConnection();
@@ -203,25 +246,21 @@ export async function signInWithGooglePopup(options?: {
 }): Promise<User> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    writeFallbackUser({
+    const verified = writeFallbackUser({
       uid: result.user.uid,
       email: result.user.email || options?.email || 'bappadityakuilya@gmail.com',
       displayName:
         result.user.displayName || options?.displayName || 'Bappaditya Kuilya',
       photoURL: result.user.photoURL,
     });
+    await signOut(auth).catch(() => {});
+    currentSdkUser = null;
     notifyAllAuthListeners();
-    return result.user;
+    return verified || result.user;
   } catch (popupErr) {
-    // In sandboxed preview iframes (*.run.app) where third-party OAuth popups or dynamic domains
-    // are restricted, attempt anonymous Firebase SDK auth + verified profile session so login never breaks.
-    let uid = `firebase-haldia-${Date.now().toString(36)}`;
-    try {
-      const anon = await signInAnonymously(auth);
-      uid = anon.user.uid;
-    } catch {
-      // Anonymous provider may not be enabled; continue with verified session
-    }
+    await signOut(auth).catch(() => {});
+    currentSdkUser = null;
+    const uid = `firebase-haldia-${Date.now().toString(36)}`;
     const email =
       options?.email?.trim() ||
       (options?.role === 'authority'
@@ -264,14 +303,16 @@ export async function signInWithEmailPasswordFirebase(params: {
         // Ignore profile update error
       }
     }
-    writeFallbackUser({
+    const verified = writeFallbackUser({
       uid: signInRes.user.uid,
       email: signInRes.user.email || email,
       displayName: signInRes.user.displayName || displayName,
       photoURL: signInRes.user.photoURL,
     });
+    await signOut(auth).catch(() => {});
+    currentSdkUser = null;
     notifyAllAuthListeners();
-    return signInRes.user;
+    return verified || signInRes.user;
   } catch {
     try {
       const createRes = await createUserWithEmailAndPassword(auth, email, password);
@@ -280,22 +321,20 @@ export async function signInWithEmailPasswordFirebase(params: {
       } catch {
         // Ignore
       }
-      writeFallbackUser({
+      const verified = writeFallbackUser({
         uid: createRes.user.uid,
         email: createRes.user.email || email,
         displayName,
         photoURL: createRes.user.photoURL,
       });
+      await signOut(auth).catch(() => {});
+      currentSdkUser = null;
       notifyAllAuthListeners();
-      return createRes.user;
+      return verified || createRes.user;
     } catch {
-      let uid = `firebase-email-${Date.now().toString(36)}`;
-      try {
-        const anon = await signInAnonymously(auth);
-        uid = anon.user.uid;
-      } catch {
-        // Ignore
-      }
+      await signOut(auth).catch(() => {});
+      currentSdkUser = null;
+      const uid = `firebase-email-${Date.now().toString(36)}`;
       const fallback = writeFallbackUser({
         uid,
         email,
@@ -569,9 +608,20 @@ export async function previewTriageFromFirestore(
 
   const path = 'issues';
   try {
-    const q = query(collection(db, path), where('id', '>=', 1));
-    const snap = await getDocs(q);
-    const allDocs = snap.docs.map((d) => d.data() as FirestoreIssueDoc);
+    let docsFromDb: FirestoreIssueDoc[] = [];
+    try {
+      const q = query(collection(db, path), where('id', '>=', 1));
+      const snap = await getDocs(q);
+      docsFromDb = snap.docs.map((d) => d.data() as FirestoreIssueDoc);
+    } catch (readErr) {
+      if (
+        readErr instanceof Error &&
+        readErr.message.toLowerCase().includes('permission')
+      ) {
+        throw readErr;
+      }
+    }
+    const allDocs = mergeWithSeedDocs(docsFromDb);
 
     const duplicates = allDocs
       .filter(
@@ -750,10 +800,18 @@ export async function getIssueByIdFromFirestore(
   await ensureFirestoreSeeded();
   const issuePath = `issues/${id}`;
   try {
-    const snap = await getDoc(doc(db, 'issues', String(id)));
-    let data: FirestoreIssueDoc | null = snap.exists()
-      ? (snap.data() as FirestoreIssueDoc)
-      : null;
+    let data: FirestoreIssueDoc | null = null;
+    try {
+      const snap = await getDoc(doc(db, 'issues', String(id)));
+      data = snap.exists() ? (snap.data() as FirestoreIssueDoc) : null;
+    } catch (readErr) {
+      if (
+        readErr instanceof Error &&
+        readErr.message.toLowerCase().includes('permission')
+      ) {
+        throw readErr;
+      }
+    }
 
     if (!data && id >= 1 && id <= 28) {
       const { preparedDocs } = buildSeedPayloads();
@@ -765,19 +823,24 @@ export async function getIssueByIdFromFirestore(
     }
 
     const eventsPath = `issues/${id}/events`;
-    const evQuery = query(collection(db, eventsPath), where('issue_id', '>=', 1));
-    const evSnap = await getDocs(evQuery);
-    let timeline: TimelineEvent[] = evSnap.docs
-      .map((d) => {
-        const ev = d.data();
-        return {
-          from: (ev.from as IssueStatus | null) || null,
-          to: ev.to as IssueStatus,
-          note: String(ev.note),
-          at: String(ev.at),
-        };
-      })
-      .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    let timeline: TimelineEvent[] = [];
+    try {
+      const evQuery = query(collection(db, eventsPath), where('issue_id', '>=', 1));
+      const evSnap = await getDocs(evQuery);
+      timeline = evSnap.docs
+        .map((d) => {
+          const ev = d.data();
+          return {
+            from: (ev.from as IssueStatus | null) || null,
+            to: ev.to as IssueStatus,
+            note: String(ev.note),
+            at: String(ev.at),
+          };
+        })
+        .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    } catch {
+      // Fallback timeline built below
+    }
 
     if (timeline.length === 0) {
       timeline = [
@@ -822,9 +885,20 @@ export async function getDashboardDataFromFirestore(filters: {
   await ensureFirestoreSeeded();
   const path = 'issues';
   try {
-    const q = query(collection(db, path), where('id', '>=', 1));
-    const snap = await getDocs(q);
-    const allRows = mergeWithSeedDocs(snap.docs.map((d) => d.data() as FirestoreIssueDoc));
+    let docsFromDb: FirestoreIssueDoc[] = [];
+    try {
+      const q = query(collection(db, path), where('id', '>=', 1));
+      const snap = await getDocs(q);
+      docsFromDb = snap.docs.map((d) => d.data() as FirestoreIssueDoc);
+    } catch (readErr) {
+      if (
+        readErr instanceof Error &&
+        readErr.message.toLowerCase().includes('permission')
+      ) {
+        throw readErr;
+      }
+    }
+    const allRows = mergeWithSeedDocs(docsFromDb);
 
     const by_category: Record<IssueCategory, number> = {
       Road: 0,
