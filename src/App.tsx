@@ -24,6 +24,10 @@ import { AuthPage, PortalSession } from './components/AuthPage';
 import { DemoWalkthroughDrawer } from './components/DemoWalkthroughDrawer';
 import { CivicAiChatbot } from './components/CivicAiChatbot';
 import {
+  PWAInstallButton,
+  OfflineConnectivityBanner,
+} from './components/PWAOfflineBanner';
+import {
   MASTER_AUTHORITY_KEY,
   subscribeToAuth,
   ensureFirestoreSeeded,
@@ -45,7 +49,7 @@ function parseHashRoute(hash: string): RouteState {
   if (cleaned === '/' || cleaned === '' || cleaned === '/report') {
     return { name: 'report' };
   }
-  const doneMatch = cleaned.match(/^\/done\/(\d+)$/);
+  const doneMatch = cleaned.match(/^\/done\/(-?\d+)$/);
   if (doneMatch) {
     return { name: 'done', id: Number(doneMatch[1]) };
   }
@@ -105,6 +109,8 @@ export default function App() {
     category: IssueCategory;
     status: IssueStatus;
     similar_to: number[];
+    queuedOffline?: boolean;
+    queueId?: string;
   } | null>(null);
   const [walkthroughOpen, setWalkthroughOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
@@ -297,8 +303,9 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: Primary Action + Mobile Sign Out */}
+        {/* Zone 3: Primary Action + PWA Install + Mobile Sign Out */}
         <div className="flex items-center gap-2 shrink-0">
+          <PWAInstallButton />
           <button
             type="button"
             onClick={handleSignOutSite}
@@ -317,6 +324,12 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Service Worker Static Cache & Offline Issue Queue Status Bar */}
+      <OfflineConnectivityBanner
+        onNavigateIssue={(id) => navigateHash(`#/issue/${id}`)}
+        onRecordSubmittedIssue={recordMySubmittedIssue}
+      />
 
       {/* Main Application Shell: Left Sidebar on Desktop + Scrollable Content Canvas */}
       <div className="flex-1 flex min-w-0">
@@ -474,7 +487,9 @@ export default function App() {
               prefillData={prefillReport}
               onClearPrefill={() => setPrefillReport(null)}
               onSuccess={(result) => {
-                recordMySubmittedIssue(result.id);
+                if (result.id > 0 && !result.queuedOffline) {
+                  recordMySubmittedIssue(result.id);
+                }
                 setLastSubmission(result);
                 navigateHash(`#/done/${result.id}`);
               }}

@@ -1177,6 +1177,22 @@ async function startServer() {
     res.status(500).json({ error: 'server error' });
   });
 
+  // Serve Service Worker (/sw.js) and Web App Manifest (/manifest.webmanifest) with explicit headers
+  app.get('/sw.js', (_req: Request, res: Response) => {
+    const swPath = path.join(process.cwd(), 'public', 'sw.js');
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(swPath);
+  });
+
+  app.get('/manifest.webmanifest', (_req: Request, res: Response) => {
+    const manifestPath = path.join(process.cwd(), 'public', 'manifest.webmanifest');
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.sendFile(manifestPath);
+  });
+
   // Mount Vite middleware in development or static dist in production
   if (process.env.NODE_ENV !== 'production') {
     process.env.DISABLE_HMR = 'true';

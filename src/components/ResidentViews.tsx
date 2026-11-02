@@ -40,6 +40,14 @@ import {
 } from './HaldiaIssueMap';
 import { CivicRealImage } from './CivicRealImage';
 import { IssueActivityLog } from './IssueActivityLog';
+import {
+  isEffectiveOnline,
+  subscribeToOfflineQueue,
+  buildOfflineTriagePreview,
+  enqueueOfflineIssueReport,
+  setSimulatedOfflineMode,
+  syncQueuedReportsNow,
+} from '../lib/offlineQueue';
 
 interface ReportIssueViewProps {
   onSuccess: (result: {
@@ -47,6 +55,8 @@ interface ReportIssueViewProps {
     category: IssueCategory;
     status: IssueStatus;
     similar_to: number[];
+    queuedOffline?: boolean;
+    queueId?: string;
   }) => void;
   onNavigateIssue: (id: number) => void;
   prefillData?: {
@@ -204,6 +214,13 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [triagePreview, setTriagePreview] = useState<TriagePreviewResponse | null>(null);
+  const [onlineMode, setOnlineMode] = useState<boolean>(() => isEffectiveOnline());
+
+  useEffect(() => {
+    const syncOnline = () => setOnlineMode(isEffectiveOnline());
+    const unsub = subscribeToOfflineQueue(syncOnline);
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (prefillData) {
@@ -221,7 +238,7 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
     }
   }, [prefillData, onClearPrefill]);
 
-  // Debounced live triage & duplicate hint preview from Cloud Firestore
+  // Debounced live triage & duplicate hint preview from Cloud Firestore (with offline local triage fallback)
   useEffect(() => {
     if (title.trim().length < 4 && description.trim().length < 6) {
       setTriagePreview(null);
@@ -229,6 +246,15 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
     }
 
     const timer = setTimeout(async () => {
+      if (!isEffectiveOnline()) {
+        const offlinePreview = buildOfflineTriagePreview(title, description);
+        setTriagePreview(offlinePreview);
+        if (!customPhotoUploaded) {
+          setPhotoUrl(getRealPhotoForCategory(offlinePreview.category));
+        }
+        return;
+      }
+
       try {
         const preview = await previewTriageFromFirestore(title, description, location);
         setTriagePreview(preview);
@@ -238,12 +264,13 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
           setPhotoUrl(matchedRealPhoto);
         }
       } catch {
-        // Ignore transient preview errors
+        const offlinePreview = buildOfflineTriagePreview(title, description);
+        setTriagePreview(offlinePreview);
       }
     }, 220);
 
     return () => clearTimeout(timer);
-  }, [title, description, location, customPhotoUploaded]);
+  }, [title, description, location, customPhotoUploaded, onlineMode]);
 
   const applyPreset = (preset: (typeof HALDIA_SAMPLE_PRESETS)[number]) => {
     setTitle(preset.title);
@@ -339,6 +366,30 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
     setSubmitting(true);
     setFieldErrors({});
 
+    // If in Haldia poor connectivity / offline mode, queue report directly in Service Worker + IndexedDB
+    if (!isEffectiveOnline()) {
+      try {
+        const queued = await enqueueOfflineIssueReport({
+          title,
+          description,
+          location,
+          photo_url: photoUrl.trim() || null,
+          lat: lat.trim() ? Number(lat) : null,
+          lng: lng.trim() ? Number(lng) : null,
+        });
+        onSuccess(queued.submissionResult);
+        return;
+      } catch (qErr) {
+        setErrorBanner(
+          qErr instanceof Error
+            ? qErr.message
+            : 'Could not queue offline report.'
+        );
+        setSubmitting(false);
+        return;
+      }
+    }
+
     try {
       const result = await createIssueInFirestore({
         title,
@@ -351,13 +402,26 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
       });
 
       onSuccess(result);
-    } catch (err) {
-      setErrorBanner(
-        err instanceof Error
-          ? err.message
-          : 'Could not save report to Cloud Firestore. Your form text is preserved.'
-      );
-      setSubmitting(false);
+    } catch {
+      // Network/Firestore unreachable: automatically fall back to Service Worker Offline Queue
+      try {
+        const queued = await enqueueOfflineIssueReport({
+          title,
+          description,
+          location,
+          photo_url: photoUrl.trim() || null,
+          lat: lat.trim() ? Number(lat) : null,
+          lng: lng.trim() ? Number(lng) : null,
+        });
+        onSuccess(queued.submissionResult);
+      } catch (err) {
+        setErrorBanner(
+          err instanceof Error
+            ? err.message
+            : 'Could not save report. Your form text is preserved.'
+        );
+        setSubmitting(false);
+      }
     }
   };
 
@@ -682,7 +746,9 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
 
             <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-[#d8dbe2]">
               <span className="text-xs text-[#5e606b]">
-                Cloud Firestore Synced · Real GPS Coordinates &amp; Real Photograph attached
+                {onlineMode
+                  ? 'Cloud Firestore Synced · Real GPS Coordinates & Real Photograph attached'
+                  : 'Offline Mode Active · Report will be saved to Service Worker Queue & auto-synced when online'}
               </span>
               <button
                 type="submit"
@@ -690,7 +756,15 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
                 className="h-11 px-6 rounded-[8px] bg-[#4f46c8] hover:bg-[#4338b5] disabled:opacity-50 text-white font-semibold text-sm shadow-xs inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Send className="w-4 h-4" />
-                <span>{submitting ? 'Submitting to Firestore...' : 'Submit Civic Report'}</span>
+                <span>
+                  {submitting
+                    ? onlineMode
+                      ? 'Submitting to Firestore...'
+                      : 'Saving to Offline Queue...'
+                    : onlineMode
+                      ? 'Submit Civic Report'
+                      : 'Save Report to Offline Queue'}
+                </span>
               </button>
             </div>
           </div>
@@ -843,6 +917,8 @@ interface ReportSuccessViewProps {
     category: IssueCategory;
     status: IssueStatus;
     similar_to: number[];
+    queuedOffline?: boolean;
+    queueId?: string;
   };
   onTrackIssue: (id: number) => void;
   onReportAnother: () => void;
@@ -854,26 +930,88 @@ export const ReportSuccessView: React.FC<ReportSuccessViewProps> = ({
   onReportAnother,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [syncedId, setSyncedId] = useState<number | null>(
+    submission.id > 0 && !submission.queuedOffline ? submission.id : null
+  );
+  const [syncingNow, setSyncingNow] = useState(false);
+
+  useEffect(() => {
+    const handleSynced = (e: Event) => {
+      const detail = (
+        e as CustomEvent<{
+          queueId: string;
+          tempIssueId: number;
+          syncedIssueId: number;
+        }>
+      ).detail;
+      if (
+        detail &&
+        (detail.tempIssueId === submission.id ||
+          (submission.queueId && detail.queueId === submission.queueId))
+      ) {
+        setSyncedId(detail.syncedIssueId);
+      }
+    };
+    window.addEventListener('civiccare-offline-report-synced', handleSynced);
+    return () =>
+      window.removeEventListener(
+        'civiccare-offline-report-synced',
+        handleSynced
+      );
+  }, [submission.id, submission.queueId]);
+
+  const isOfflinePending =
+    (submission.queuedOffline || submission.id < 0) && syncedId === null;
+  const displayId = syncedId !== null ? `#${syncedId}` : submission.queueId || `Q-${Math.abs(submission.id)}`;
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(String(submission.id));
+    navigator.clipboard.writeText(
+      syncedId !== null ? String(syncedId) : displayId
+    );
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleReconnectAndSync = async () => {
+    if (syncingNow) return;
+    setSyncingNow(true);
+    setSimulatedOfflineMode(false);
+    try {
+      await syncQueuedReportsNow((newId) => {
+        setSyncedId(newId);
+      });
+    } finally {
+      setSyncingNow(false);
+    }
   };
 
   return (
     <div className="max-w-2xl mx-auto py-4">
       <div className="bg-white border border-[#d8dbe2] rounded-[16px] p-6 sm:p-8 space-y-6">
         <div className="flex items-start gap-4">
-          <div className="w-11 h-11 rounded-[10px] bg-[#d8f3e3] text-[#25985a] flex items-center justify-center shrink-0">
-            <CheckCircle2 className="w-6 h-6" />
+          <div
+            className={`w-11 h-11 rounded-[10px] flex items-center justify-center shrink-0 ${
+              isOfflinePending
+                ? 'bg-[#fef3c7] text-[#92400e]'
+                : 'bg-[#d8f3e3] text-[#25985a]'
+            }`}
+          >
+            {isOfflinePending ? (
+              <Clock className="w-6 h-6" />
+            ) : (
+              <CheckCircle2 className="w-6 h-6" />
+            )}
           </div>
           <div>
             <h1 className="text-2xl font-bold text-[#17181d]">
-              Civic Issue Reported Successfully
+              {isOfflinePending
+                ? 'Issue Queued Offline in Service Worker'
+                : 'Civic Issue Reported Successfully'}
             </h1>
             <p className="text-sm text-[#5e606b] mt-1">
-              Saved to Cloud Firestore with your real-time GPS location pin and real photographic evidence. Keep your Issue ID below to check status updates.
+              {isOfflinePending
+                ? 'Saved to your device IndexedDB & Service Worker queue for Haldia low-connectivity areas. It will automatically sync to Cloud Firestore as soon as network connectivity returns.'
+                : 'Saved to Cloud Firestore with your real-time GPS location pin and real photographic evidence. Keep your Issue ID below to check status updates.'}
             </p>
           </div>
         </div>
@@ -882,15 +1020,25 @@ export const ReportSuccessView: React.FC<ReportSuccessViewProps> = ({
         <div className="bg-[#f7f8fb] border border-[#d8dbe2] rounded-[12px] p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="text-xs font-medium text-[#5e606b]">
-              Official Tracking ID
+              {isOfflinePending
+                ? 'Offline Queue Reference (Pending Sync)'
+                : 'Official Tracking ID'}
             </div>
             <div className="text-3xl sm:text-4xl font-bold font-mono tabular-nums text-[#4f46c8] mt-1">
-              #{submission.id}
+              {displayId}
             </div>
             <div className="text-xs text-[#5e606b] mt-1.5 flex items-center gap-2">
-              <span>Auto-Routed Department: <strong className="text-[#17181d]">{submission.category}</strong></span>
+              <span>
+                Auto-Routed Department:{' '}
+                <strong className="text-[#17181d]">{submission.category}</strong>
+              </span>
               <span aria-hidden="true">·</span>
-              <span>Initial Status: <strong className="text-[#17181d]">{submission.status}</strong></span>
+              <span>
+                Status:{' '}
+                <strong className="text-[#17181d]">
+                  {isOfflinePending ? 'Queued Offline (Store & Forward)' : submission.status}
+                </strong>
+              </span>
             </div>
           </div>
 
@@ -902,16 +1050,37 @@ export const ReportSuccessView: React.FC<ReportSuccessViewProps> = ({
             {copied ? (
               <>
                 <Check className="w-4 h-4 text-[#25985a]" />
-                <span className="text-[#25985a]">Copied ID #{submission.id}</span>
+                <span className="text-[#25985a]">Copied {displayId}</span>
               </>
             ) : (
               <>
                 <Copy className="w-4 h-4 text-[#5e606b]" />
-                <span>Copy Issue ID</span>
+                <span>Copy Reference</span>
               </>
             )}
           </button>
         </div>
+
+        {isOfflinePending && (
+          <div className="p-4 rounded-[10px] border border-[#fcd34d] bg-[#fef3c7]/60 text-xs text-[#92400e] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold">
+                Ready for Background Sync when Haldia network reconnects
+              </div>
+              <div className="mt-0.5 text-[#78350f]">
+                Click &quot;Reconnect &amp; Sync Now&quot; to restore connectivity and push this queued report to Cloud Firestore immediately.
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={syncingNow}
+              onClick={handleReconnectAndSync}
+              className="h-9 px-4 rounded-[8px] bg-[#92400e] hover:bg-[#78350f] text-white font-semibold text-xs shrink-0 cursor-pointer"
+            >
+              {syncingNow ? 'Syncing to Firestore...' : 'Reconnect & Sync Now'}
+            </button>
+          </div>
+        )}
 
         {submission.similar_to && submission.similar_to.length > 0 && (
           <div className="p-4 rounded-[10px] border border-[#c9c8f1] bg-[#e8e8fb]/60 text-xs text-[#17181d] flex items-start gap-3">
@@ -936,14 +1105,16 @@ export const ReportSuccessView: React.FC<ReportSuccessViewProps> = ({
             <span>Submit Another Issue</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => onTrackIssue(submission.id)}
-            className="h-11 px-6 rounded-[8px] bg-[#4f46c8] hover:bg-[#4338b5] text-white text-sm font-semibold shadow-xs inline-flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <span>View Public Status &amp; Real Map (#{submission.id})</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
+          {syncedId !== null && (
+            <button
+              type="button"
+              onClick={() => onTrackIssue(syncedId)}
+              className="h-11 px-6 rounded-[8px] bg-[#4f46c8] hover:bg-[#4338b5] text-white text-sm font-semibold shadow-xs inline-flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <span>View Public Status &amp; Real Map (#{syncedId})</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </div>

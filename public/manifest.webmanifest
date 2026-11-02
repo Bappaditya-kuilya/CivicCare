@@ -1,0 +1,39 @@
+{
+  "id": "/",
+  "name": "CivicCare Haldia — Civic Issue Tracker",
+  "short_name": "CivicCare",
+  "description": "Offline-ready public civic issue reporting, automated keyword & multilingual triage, duplicate cluster detection, and ward authority dispatch dashboard for Haldia.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#4f46c8",
+  "background_color": "#f4f5f8",
+  "categories": ["government", "utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
